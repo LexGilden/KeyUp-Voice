@@ -14,6 +14,8 @@ KeyUp Voice is a local push-to-talk voice typing application for Windows 11.
 Hold a configurable key, speak, and release it to insert recognized text into
 the currently focused text field.
 
+![KeyUp Voice demo: hold Right Alt, speak, recognize locally, and insert text](assets/keyup-voice-demo.gif)
+
 Recognition runs locally with
 [faster-whisper](https://github.com/SYSTRAN/faster-whisper). A second hotkey
 can translate speech directly to English using Whisper's built-in translation
