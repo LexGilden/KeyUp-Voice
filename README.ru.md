@@ -29,7 +29,7 @@ KeyUp Voice — локальное приложение голосового в�
 
 ## Скачивание и установка
 
-1. Откройте раздел **Releases** репозитория.
+1. Откройте раздел **[Releases](https://github.com/LexGilden/KeyUp-Voice/releases/latest)** репозитория.
 2. Скачайте `KeyUp-Voice-Setup-<версия>.exe`.
 3. Выберите русский или английский язык установщика.
 4. Запустите KeyUp Voice и выберите модель Whisper.
