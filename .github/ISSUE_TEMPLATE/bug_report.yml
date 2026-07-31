@@ -1,0 +1,69 @@
+name: Bug report
+description: Report a reproducible problem in KeyUp Voice
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve KeyUp Voice. Please remove personal information from logs before attaching them.
+  - type: input
+    id: version
+    attributes:
+      label: KeyUp Voice version
+      placeholder: "1.4.1"
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: "Windows 11 24H2"
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Processing device
+      options:
+        - NVIDIA GPU (CUDA)
+        - CPU
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Whisper model
+      placeholder: "medium"
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the actual and expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start KeyUp Voice
+        2. Hold Left Alt
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste a short excerpt or attach the log after removing private information.
+      render: text
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Screenshots, audio-device details, GPU model, or anything else that may help.

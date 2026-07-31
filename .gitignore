@@ -1,0 +1,43 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+.mypy_cache/
+
+# PyInstaller and build output
+build/
+dist/
+*.spec
+
+# Installer output and logs
+installer-output/
+*.log
+
+# Downloaded models and GPU runtimes
+models/
+cuda-runtime/
+cuda-runtime.installing/
+.component-downloads/
+*.part
+*.bin
+*.whl
+
+# Local application configuration
+config.json
+sounds/
+
+# IDE and OS files
+.idea/
+.vscode/
+.vs/
+*.user
+*.suo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local test artifacts
+installer-test-*/
+*-install-test.log

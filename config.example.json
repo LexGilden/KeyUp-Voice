@@ -1,0 +1,18 @@
+{
+  "model_id": "medium",
+  "model_path": "C:\\AI\\Models\\faster-whisper-medium",
+  "language": "ru",
+  "hotkey": "left_alt",
+  "translation_hotkey": "right_ctrl",
+  "device": "auto",
+  "compute_type": "auto",
+  "microphone": null,
+  "output_device": null,
+  "min_recording_seconds": 0.25,
+  "max_recording_seconds": 300,
+  "paste_restore_delay_ms": 700,
+  "sound_cues": false,
+  "autostart": false,
+  "overlay_position": "bottom_center",
+  "animation_style": "live_ball"
+}

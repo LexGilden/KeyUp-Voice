@@ -1,0 +1,28 @@
+name: Feature request
+description: Suggest an improvement for KeyUp Voice
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Explain the use case, not only the proposed implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: Describe how you expect the feature to work.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
