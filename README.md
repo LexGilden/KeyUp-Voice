@@ -2,6 +2,10 @@
 
 [Русская версия](README.ru.md)
 
+## [⬇ Download KeyUp Voice for Windows](https://github.com/LexGilden/KeyUp-Voice/releases/latest)
+
+Latest stable installer for Windows 11 x64.
+
 ![Windows 11](https://img.shields.io/badge/Windows-11-0078D4?logo=windows11&logoColor=white)
 ![Python 3.11](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
