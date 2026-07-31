@@ -1,5 +1,5 @@
 #define MyAppName "KeyUp Voice"
-#define MyAppVersion "1.4.1"
+#define MyAppVersion "1.5.0"
 #define MyAppPublisher "LexGilden"
 #define MyAppExeName "KeyUpVoice.exe"
 
