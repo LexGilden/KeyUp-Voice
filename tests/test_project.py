@@ -16,6 +16,40 @@ class ProjectMetadataTests(unittest.TestCase):
             app.DEFAULT_CONFIG["translation_hotkey"],
         )
 
+    def test_hotkey_normalization(self):
+        cases = {
+            "right_alt": "right_alt",
+            "Ctrl+Space": "ctrl+space",
+            "shift+ctrl+F12": "ctrl+shift+f12",
+            "Alt+`": "alt+oem_3",
+            "Mouse4": "mouse_x1",
+            "xbutton2": "mouse_x2",
+        }
+        for value, expected in cases.items():
+            with self.subTest(value=value):
+                self.assertEqual(app.normalize_hotkey(value), expected)
+
+        self.assertEqual(app.normalize_hotkey("unknown+space"), "right_alt")
+
+    def test_reserved_hotkeys(self):
+        for value in ("alt+tab", "alt+f4", "ctrl+alt+delete", "win+l"):
+            with self.subTest(value=value):
+                self.assertTrue(app.hotkey_is_reserved(value))
+        self.assertFalse(app.hotkey_is_reserved("ctrl+space"))
+
+    def test_hotkey_labels_are_localized(self):
+        app.set_interface_language("ru")
+        self.assertEqual(app.hotkey_label("ctrl+space"), "Ctrl+Пробел")
+        app.set_interface_language("en")
+        try:
+            self.assertEqual(app.hotkey_label("ctrl+space"), "Ctrl+Space")
+            self.assertEqual(
+                app.hotkey_label("mouse_x1"),
+                "Mouse Side Button 1",
+            )
+        finally:
+            app.set_interface_language("ru")
+
     def test_supported_whisper_models_are_complete(self):
         self.assertEqual(
             set(app.WHISPER_MODELS),

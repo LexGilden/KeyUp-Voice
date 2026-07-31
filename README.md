@@ -24,9 +24,13 @@ mode.
 ## Features
 
 - Voice typing in any application that accepts pasted text.
-- Separate configurable hotkeys for dictation and translation to English.
+- Separate keys, key combinations, or mouse side buttons for dictation and
+  translation (`Ctrl+Space`, Alt plus the grave-accent key, Mouse 4/5, and more).
+- Press `Esc` to cancel the current recording without recognition or insertion.
+- Undo the latest insertion from the tray menu.
 - Modern animated microphone indicator with seven visual styles.
 - Five multilingual Whisper models selectable at first launch or later.
+- View model disk usage and remove unused models or incomplete downloads.
 - Automatic NVIDIA GPU detection and optional CUDA acceleration.
 - CPU fallback for AMD, Intel, and systems without supported NVIDIA CUDA.
 - Russian and English application and installer interfaces.
@@ -61,6 +65,9 @@ Default hotkeys:
 | Translate speech to English | Right Ctrl |
 
 Both keys can be changed in **Settings** from the system tray menu.
+Click an assignment field, then press the desired key, combination, or mouse
+side button. During recording, `Esc` cancels dictation. Undo for the latest
+insertion is available from the tray menu.
 
 ## Whisper models
 
@@ -74,6 +81,8 @@ Both keys can be changed in **Settings** from the system tray menu.
 
 Installed models are kept separately. Switching to an installed model does not
 download it again. Missing models are downloaded after the selection is saved.
+Open **Settings → Manage models** to see actual disk usage and remove any model
+that is not active, including an incomplete download.
 
 Model files come from the official
 [Systran faster-whisper collection](https://huggingface.co/collections/Systran/faster-whisper)

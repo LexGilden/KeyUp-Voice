@@ -6,7 +6,7 @@ point and packaged as an onedir PyInstaller application.
 ## Main components
 
 ```text
-Global keyboard hooks
+Global keyboard/mouse hooks
         │
         ▼
 AudioRecorder ──► VoiceOverlay
@@ -19,11 +19,12 @@ Windows clipboard + SendInput (Ctrl+V)
 ```
 
 - `KeyboardHook` installs low-level Windows keyboard hooks.
+- `MouseHotkeyHook` supports Mouse 4/5, with optional keyboard modifiers.
 - `KeyStatePoller` provides a secondary key-state path for reliable key release.
 - `AudioRecorder` captures mono floating-point audio with `sounddevice`.
 - `VoiceOverlay` renders the selected animation without taking keyboard focus.
 - `VoiceApp` owns the tray menu, model lifecycle, recording state, processing,
-  and text insertion.
+  text insertion, and insertion undo.
 - `ComponentSetupDialog` and `ComponentInstallWorker` download models and CUDA.
 
 ## State flow
@@ -47,6 +48,9 @@ metadata in `app.py`. Models are stored under:
 ```
 
 Models remain separate so switching back does not require another download.
+The model manager measures actual disk usage and only permits deletion inside
+the dedicated models directory. The model currently selected by the running
+application cannot be removed.
 
 ## CUDA
 

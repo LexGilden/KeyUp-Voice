@@ -55,11 +55,16 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QHBoxLayout,
+    QHeaderView,
     QLabel,
     QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QAbstractItemView,
     QSpinBox,
     QStyle,
     QSystemTrayIcon,
@@ -70,7 +75,7 @@ from PySide6.QtWidgets import (
 
 APP_NAME = "KeyUp Voice"
 LEGACY_APP_NAME = "Golos"
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.5.0"
 APP_DIR = Path(__file__).resolve().parent
 INSTALL_DIR = (
     Path(sys.executable).resolve().parent
@@ -223,7 +228,30 @@ VK_CODES = {
     "f10": 0x79,
     "f11": 0x7A,
     "f12": 0x7B,
+    "space": 0x20,
+    "tab": 0x09,
+    "enter": 0x0D,
+    "escape": 0x1B,
+    "backspace": 0x08,
+    "insert": 0x2D,
+    "delete": 0x2E,
+    "home": 0x24,
+    "end": 0x23,
+    "page_up": 0x21,
+    "page_down": 0x22,
+    "left": 0x25,
+    "up": 0x26,
+    "right": 0x27,
+    "down": 0x28,
+    "oem_3": 0xC0,
 }
+
+for _letter in "abcdefghijklmnopqrstuvwxyz":
+    VK_CODES[_letter] = ord(_letter.upper())
+for _digit in "0123456789":
+    VK_CODES[_digit] = ord(_digit)
+for _number in range(1, 25):
+    VK_CODES.setdefault(f"f{_number}", 0x6F + _number)
 
 HOTKEY_LABELS = {
     "left_alt": ("Левый Alt", "Left Alt"),
@@ -240,7 +268,128 @@ HOTKEY_LABELS = {
     "f10": ("F10", "F10"),
     "f11": ("F11", "F11"),
     "f12": ("F12", "F12"),
+    "space": ("Пробел", "Space"),
+    "tab": ("Tab", "Tab"),
+    "enter": ("Enter", "Enter"),
+    "backspace": ("Backspace", "Backspace"),
+    "insert": ("Insert", "Insert"),
+    "delete": ("Delete", "Delete"),
+    "home": ("Home", "Home"),
+    "end": ("End", "End"),
+    "page_up": ("Page Up", "Page Up"),
+    "page_down": ("Page Down", "Page Down"),
+    "left": ("Стрелка влево", "Left Arrow"),
+    "up": ("Стрелка вверх", "Up Arrow"),
+    "right": ("Стрелка вправо", "Right Arrow"),
+    "down": ("Стрелка вниз", "Down Arrow"),
+    "oem_3": ("` / Ё", "` / ~"),
+    "mouse_x1": ("Боковая кнопка мыши 1", "Mouse Side Button 1"),
+    "mouse_x2": ("Боковая кнопка мыши 2", "Mouse Side Button 2"),
 }
+
+MODIFIER_VK_CODES = {
+    "ctrl": (0x11, 0xA2, 0xA3),
+    "alt": (0x12, 0xA4, 0xA5),
+    "shift": (0x10, 0xA0, 0xA1),
+    "win": (0x5B, 0x5C),
+}
+MODIFIER_ORDER = ("ctrl", "alt", "shift", "win")
+MODIFIER_LABELS = {
+    "ctrl": "Ctrl",
+    "alt": "Alt",
+    "shift": "Shift",
+    "win": "Win",
+}
+MOUSE_TRIGGER_VKS = {"mouse_x1": 0x05, "mouse_x2": 0x06}
+VK_TO_KEY_NAME = {
+    vk_code: key_name
+    for key_name, vk_code in VK_CODES.items()
+    if key_name not in {"left_alt", "right_alt", "left_ctrl", "right_ctrl"}
+}
+
+
+def normalize_hotkey(value: Any, fallback: str = "right_alt") -> str:
+    raw = str(value or fallback).strip().lower().replace(" ", "_")
+    aliases = {
+        "control": "ctrl",
+        "left_control": "left_ctrl",
+        "right_control": "right_ctrl",
+        "mouse4": "mouse_x1",
+        "mouse5": "mouse_x2",
+        "xbutton1": "mouse_x1",
+        "xbutton2": "mouse_x2",
+        "`": "oem_3",
+    }
+    parts = [aliases.get(part, part) for part in raw.split("+") if part]
+    if not parts:
+        return fallback
+    trigger = parts[-1]
+    if any(part not in MODIFIER_ORDER for part in parts[:-1]):
+        return fallback
+    modifiers = tuple(
+        modifier
+        for modifier in MODIFIER_ORDER
+        if modifier in parts[:-1]
+    )
+    if trigger not in VK_CODES and trigger not in MOUSE_TRIGGER_VKS:
+        return fallback
+    if trigger in MODIFIER_ORDER:
+        return fallback
+    return "+".join((*modifiers, trigger))
+
+
+def hotkey_parts(value: Any, fallback: str = "right_alt") -> tuple[tuple[str, ...], str]:
+    normalized = normalize_hotkey(value, fallback)
+    parts = normalized.split("+")
+    return tuple(parts[:-1]), parts[-1]
+
+
+def hotkey_label(value: Any) -> str:
+    modifiers, trigger = hotkey_parts(value)
+    labels = [MODIFIER_LABELS[modifier] for modifier in modifiers]
+    trigger_labels = HOTKEY_LABELS.get(trigger)
+    if trigger_labels is not None:
+        labels.append(localized_label(trigger_labels))
+    else:
+        labels.append(trigger.upper())
+    return "+".join(labels)
+
+
+def hotkey_modifiers_down(
+    modifiers: tuple[str, ...],
+    trigger: str | None = None,
+) -> bool:
+    required = set(modifiers)
+    pressed = {
+        modifier
+        for modifier, vk_codes in MODIFIER_VK_CODES.items()
+        if any(user32.GetAsyncKeyState(vk_code) & 0x8000 for vk_code in vk_codes)
+    }
+    if trigger in {"left_alt", "right_alt"}:
+        pressed.discard("alt")
+        # Windows may expose Right Alt as AltGr (synthetic Ctrl+Alt),
+        # especially on non-English keyboard layouts. The configured
+        # standalone Right Alt hotkey must still behave as one key.
+        if trigger == "right_alt" and user32.GetAsyncKeyState(
+            VK_CODES["right_alt"]
+        ) & 0x8000:
+            pressed.discard("ctrl")
+    elif trigger in {"left_ctrl", "right_ctrl"}:
+        pressed.discard("ctrl")
+    return pressed == required
+
+
+def hotkey_is_reserved(value: Any) -> bool:
+    normalized = normalize_hotkey(value)
+    return normalized in {
+        "alt+tab",
+        "alt+f4",
+        "ctrl+alt+delete",
+        "ctrl+shift+escape",
+        "win+l",
+        "win+d",
+        "win+r",
+    }
 
 ANIMATION_LABELS = {
     "live_ball": ("1. Живой шар", "1. Living ball"),
@@ -319,14 +468,20 @@ kernel32 = ctypes.windll.kernel32
 winmm = ctypes.windll.winmm
 
 WH_KEYBOARD_LL = 13
+WH_MOUSE_LL = 14
 WM_KEYDOWN = 0x0100
 WM_KEYUP = 0x0101
 WM_SYSKEYDOWN = 0x0104
 WM_SYSKEYUP = 0x0105
+WM_XBUTTONDOWN = 0x020B
+WM_XBUTTONUP = 0x020C
 WM_QUIT = 0x0012
 KEYEVENTF_KEYUP = 0x0002
+LLKHF_INJECTED = 0x00000010
+LLMHF_INJECTED = 0x00000001
 VK_CONTROL = 0x11
 VK_V = 0x56
+VK_Z = 0x5A
 INPUT_KEYBOARD = 1
 SW_RESTORE = 9
 
@@ -335,6 +490,16 @@ class KBDLLHOOKSTRUCT(ctypes.Structure):
     _fields_ = [
         ("vkCode", wintypes.DWORD),
         ("scanCode", wintypes.DWORD),
+        ("flags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ctypes.c_size_t),
+    ]
+
+
+class MSLLHOOKSTRUCT(ctypes.Structure):
+    _fields_ = [
+        ("pt", wintypes.POINT),
+        ("mouseData", wintypes.DWORD),
         ("flags", wintypes.DWORD),
         ("time", wintypes.DWORD),
         ("dwExtraInfo", ctypes.c_size_t),
@@ -403,6 +568,8 @@ user32.CallNextHookEx.restype = ctypes.c_ssize_t
 user32.UnhookWindowsHookEx.argtypes = [wintypes.HANDLE]
 user32.UnhookWindowsHookEx.restype = wintypes.BOOL
 user32.GetForegroundWindow.restype = wintypes.HWND
+user32.IsWindow.argtypes = [wintypes.HWND]
+user32.IsWindow.restype = wintypes.BOOL
 user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
 user32.GetAsyncKeyState.restype = ctypes.c_short
 user32.SetForegroundWindow.argtypes = [wintypes.HWND]
@@ -496,6 +663,33 @@ def whisper_model_available(path: Path, model_id: Any = None) -> bool:
         and (path / file_name).stat().st_size == expected_size
         for file_name, (expected_size, _sha256) in files.items()
     )
+
+
+def directory_size(path: Path) -> int:
+    if not path.is_dir():
+        return 0
+    total = 0
+    try:
+        for item in path.rglob("*"):
+            if item.is_file():
+                total += item.stat().st_size
+    except OSError:
+        return total
+    return total
+
+
+def format_file_size(value: int) -> str:
+    if value >= 1024 ** 3:
+        return f"{value / (1024 ** 3):.2f} {tr('ГБ', 'GB')}"
+    return f"{value / (1024 ** 2):.1f} {tr('МБ', 'MB')}"
+
+
+def safe_installed_model_path(model_id: Any) -> Path:
+    target = installed_model_path(model_id).resolve()
+    root = MODELS_DIR.resolve()
+    if target.parent != root or target.name != f"faster-whisper-{normalized_model_id(model_id)}":
+        raise ValueError("Unsafe model directory")
+    return target
 
 
 def load_config() -> dict[str, Any]:
@@ -794,6 +988,254 @@ def make_tray_icon(color: QColor) -> QIcon:
     return QIcon(pixmap)
 
 
+def qt_modifier_names(modifiers: Qt.KeyboardModifier) -> tuple[str, ...]:
+    selected: list[str] = []
+    for flag, name in (
+        (Qt.KeyboardModifier.ControlModifier, "ctrl"),
+        (Qt.KeyboardModifier.AltModifier, "alt"),
+        (Qt.KeyboardModifier.ShiftModifier, "shift"),
+        (Qt.KeyboardModifier.MetaModifier, "win"),
+    ):
+        if modifiers & flag:
+            selected.append(name)
+    return tuple(selected)
+
+
+class HotkeyCaptureButton(QPushButton):
+    value_changed = Signal(str)
+
+    def __init__(self, value: Any, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._value = normalize_hotkey(value)
+        self._capturing = False
+        self._pending_modifier: str | None = None
+        self.clicked.connect(self.begin_capture)
+        self._refresh_text()
+
+    def value(self) -> str:
+        return self._value
+
+    def set_value(self, value: Any) -> None:
+        self._value = normalize_hotkey(value)
+        self._capturing = False
+        self._pending_modifier = None
+        self._refresh_text()
+
+    def begin_capture(self) -> None:
+        self._capturing = True
+        self._pending_modifier = None
+        self.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.setText(tr("Нажмите сочетание…", "Press a shortcut…"))
+
+    def _refresh_text(self) -> None:
+        self.setText(hotkey_label(self._value))
+
+    def _finish(self, value: str) -> None:
+        self._value = normalize_hotkey(value, self._value)
+        self._capturing = False
+        self._pending_modifier = None
+        self._refresh_text()
+        self.value_changed.emit(self._value)
+
+    def keyPressEvent(self, event: Any) -> None:
+        if not self._capturing:
+            super().keyPressEvent(event)
+            return
+        if event.key() == Qt.Key.Key_Escape:
+            self._capturing = False
+            self._pending_modifier = None
+            self._refresh_text()
+            event.accept()
+            return
+
+        native_vk = int(event.nativeVirtualKey())
+        modifier_trigger = {
+            0xA2: "left_ctrl",
+            0xA3: "right_ctrl",
+            0xA4: "left_alt",
+            0xA5: "right_alt",
+        }.get(native_vk)
+        if modifier_trigger is not None:
+            self._pending_modifier = modifier_trigger
+            event.accept()
+            return
+        if event.key() in {
+            Qt.Key.Key_Control,
+            Qt.Key.Key_Alt,
+            Qt.Key.Key_Shift,
+            Qt.Key.Key_Meta,
+        }:
+            generic = None
+            if event.key() == Qt.Key.Key_Control:
+                generic = (
+                    "right_ctrl"
+                    if user32.GetAsyncKeyState(VK_CODES["right_ctrl"]) & 0x8000
+                    else "left_ctrl"
+                )
+            elif event.key() == Qt.Key.Key_Alt:
+                generic = (
+                    "right_alt"
+                    if user32.GetAsyncKeyState(VK_CODES["right_alt"]) & 0x8000
+                    else "left_alt"
+                )
+            self._pending_modifier = generic
+            event.accept()
+            return
+
+        trigger = VK_TO_KEY_NAME.get(native_vk)
+        if trigger is None:
+            event.accept()
+            return
+        modifiers = qt_modifier_names(event.modifiers())
+        self._finish("+".join((*modifiers, trigger)))
+        event.accept()
+
+    def keyReleaseEvent(self, event: Any) -> None:
+        if self._capturing and self._pending_modifier is not None:
+            native_vk = int(event.nativeVirtualKey())
+            expected_vk = VK_CODES.get(self._pending_modifier)
+            if expected_vk is None or native_vk in {0, expected_vk, 0x11, 0x12}:
+                self._finish(self._pending_modifier)
+                event.accept()
+                return
+        super().keyReleaseEvent(event)
+
+    def mousePressEvent(self, event: Any) -> None:
+        if self._capturing:
+            trigger = {
+                Qt.MouseButton.BackButton: "mouse_x1",
+                Qt.MouseButton.ForwardButton: "mouse_x2",
+            }.get(event.button())
+            if trigger is not None:
+                modifiers = qt_modifier_names(event.modifiers())
+                self._finish("+".join((*modifiers, trigger)))
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+
+class ModelManagerDialog(QDialog):
+    models_changed = Signal()
+
+    def __init__(self, config: dict[str, Any], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.config = config
+        self.active_model_id = normalized_model_id(config.get("model_id"))
+        self.active_model_path = Path(str(config.get("model_path", ""))).resolve()
+        self.setWindowTitle(tr("Управление моделями", "Manage Whisper Models"))
+        self.setWindowIcon(make_tray_icon(QColor(57, 208, 132)))
+        self.resize(700, 360)
+
+        layout = QVBoxLayout(self)
+        description = QLabel(
+            tr(
+                "Установленные модели хранятся отдельно. Активную модель удалить нельзя.",
+                "Installed models are stored separately. The active model cannot be removed.",
+            )
+        )
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        self.table = QTableWidget(0, 4, self)
+        self.table.setHorizontalHeaderLabels(
+            [
+                tr("Модель", "Model"),
+                tr("Состояние", "Status"),
+                tr("Занято", "Disk usage"),
+                tr("Действие", "Action"),
+            ]
+        )
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.table.verticalHeader().setVisible(False)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        layout.addWidget(self.table)
+
+        self.total_label = QLabel()
+        layout.addWidget(self.total_label)
+        close_button = QPushButton(tr("Закрыть", "Close"))
+        close_button.clicked.connect(self.accept)
+        layout.addWidget(close_button)
+        self._refresh()
+
+    def _is_active(self, model_id: str, path: Path) -> bool:
+        return (
+            model_id == self.active_model_id
+            and path.resolve() == self.active_model_path
+        )
+
+    def _refresh(self) -> None:
+        self.table.setRowCount(0)
+        total_size = 0
+        for model_id in WHISPER_MODELS:
+            path = installed_model_path(model_id)
+            installed = whisper_model_available(path, model_id)
+            present = path.is_dir()
+            active = self._is_active(model_id, path)
+            size = directory_size(path) if path.is_dir() else 0
+            total_size += size
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            self.table.setItem(row, 0, QTableWidgetItem(model_label(model_id)))
+            status = (
+                tr("Активна", "Active")
+                if active
+                else tr("Установлена", "Installed")
+                if installed
+                else tr("Загрузка не завершена", "Incomplete download")
+                if present
+                else tr("Не установлена", "Not installed")
+            )
+            self.table.setItem(row, 1, QTableWidgetItem(status))
+            self.table.setItem(
+                row,
+                2,
+                QTableWidgetItem(format_file_size(size) if size else "—"),
+            )
+            remove_button = QPushButton(tr("Удалить", "Remove"))
+            remove_button.setEnabled(present and not active)
+            remove_button.clicked.connect(
+                lambda _checked=False, selected=model_id: self._remove_model(selected)
+            )
+            self.table.setCellWidget(row, 3, remove_button)
+        self.total_label.setText(
+            f"{tr('Всего занято моделями:', 'Total model storage:')} "
+            f"<b>{format_file_size(total_size)}</b>"
+        )
+
+    def _remove_model(self, model_id: str) -> None:
+        path = safe_installed_model_path(model_id)
+        if self._is_active(model_id, path) or not path.is_dir():
+            return
+        size = directory_size(path)
+        answer = QMessageBox.question(
+            self,
+            tr("Удалить модель?", "Remove model?"),
+            tr(
+                f"Удалить {model_label(model_id)} и освободить {format_file_size(size)}?",
+                f"Remove {model_label(model_id)} and free {format_file_size(size)}?",
+            ),
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            shutil.rmtree(path)
+        except OSError as exc:
+            QMessageBox.critical(
+                self,
+                tr("Не удалось удалить модель", "Could not remove model"),
+                str(exc),
+            )
+            return
+        log_message(f"Model removed: id={model_id}, bytes={size}")
+        self.models_changed.emit()
+        self._refresh()
+
+
 class SettingsDialog(QDialog):
     settings_saved = Signal(object)
 
@@ -809,8 +1251,8 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(self)
         intro = QLabel(
             tr(
-                "Изменения клавиши, микрофона и интерфейса применяются сразу.",
-                "Hotkey, microphone, and interface changes apply immediately.",
+                "Изменения применяются после нажатия кнопки «Сохранить».",
+                "Changes are applied after you click Save.",
             )
         )
         intro.setWordWrap(True)
@@ -819,14 +1261,13 @@ class SettingsDialog(QDialog):
         form = QFormLayout()
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
 
-        self.hotkey_combo = QComboBox()
-        for key, labels in HOTKEY_LABELS.items():
-            self.hotkey_combo.addItem(localized_label(labels), key)
-        self._select_data(self.hotkey_combo, config.get("hotkey", "right_alt"))
-        self.hotkey_combo.currentIndexChanged.connect(self._update_hotkey_warning)
+        self.hotkey_control = HotkeyCaptureButton(
+            config.get("hotkey", "right_alt")
+        )
+        self.hotkey_control.value_changed.connect(self._update_hotkey_warning)
         form.addRow(
             tr("Клавиша диктовки:", "Dictation hotkey:"),
-            self.hotkey_combo,
+            self.hotkey_control,
         )
 
         self.hotkey_warning = QLabel()
@@ -834,22 +1275,15 @@ class SettingsDialog(QDialog):
         self.hotkey_warning.setStyleSheet("color: #b26a00;")
         form.addRow("", self.hotkey_warning)
 
-        self.translation_hotkey_combo = QComboBox()
-        for key, labels in HOTKEY_LABELS.items():
-            self.translation_hotkey_combo.addItem(
-                localized_label(labels),
-                key,
-            )
-        self._select_data(
-            self.translation_hotkey_combo,
-            config.get("translation_hotkey", "right_ctrl"),
+        self.translation_hotkey_control = HotkeyCaptureButton(
+            config.get("translation_hotkey", "right_ctrl")
         )
-        self.translation_hotkey_combo.currentIndexChanged.connect(
+        self.translation_hotkey_control.value_changed.connect(
             self._update_hotkey_warning
         )
         form.addRow(
             tr("Перевод на английский:", "Translate to English:"),
-            self.translation_hotkey_combo,
+            self.translation_hotkey_control,
         )
 
         self.microphone_combo = QComboBox()
@@ -935,33 +1369,17 @@ class SettingsDialog(QDialog):
         form.addRow(tr("Автозапуск:", "Startup:"), self.autostart)
 
         self.model_combo = QComboBox()
-        configured_model_id = normalized_model_id(config.get("model_id"))
-        configured_model_path = Path(str(config.get("model_path", "")))
-        for model_id in WHISPER_MODELS:
-            is_current_external = (
-                model_id == configured_model_id
-                and whisper_model_available(
-                    configured_model_path,
-                    model_id,
-                )
-            )
-            is_installed = whisper_model_available(
-                installed_model_path(model_id),
-                model_id,
-            )
-            prefix = "✓ " if is_current_external or is_installed else ""
-            self.model_combo.addItem(
-                prefix + model_label(model_id),
-                model_id,
-            )
-        self._select_data(
-            self.model_combo,
-            normalized_model_id(config.get("model_id")),
-        )
+        self._populate_model_combo()
         form.addRow(
             tr("Модель Whisper:", "Whisper model:"),
             self.model_combo,
         )
+
+        manage_models_button = QPushButton(
+            tr("Управление моделями…", "Manage models…")
+        )
+        manage_models_button.clicked.connect(self._open_model_manager)
+        form.addRow(tr("Хранилище моделей:", "Model storage:"), manage_models_button)
 
         model_path_label = QLabel(str(config.get("model_path", "")))
         model_path_label.setTextInteractionFlags(
@@ -999,16 +1417,49 @@ class SettingsDialog(QDialog):
         if index >= 0:
             combo.setCurrentIndex(index)
 
-    def _update_hotkey_warning(self) -> None:
-        key = self.hotkey_combo.currentData()
-        label = self.hotkey_combo.currentText()
-        translation_key = self.translation_hotkey_combo.currentData()
+    def _populate_model_combo(self) -> None:
+        selected = (
+            self.model_combo.currentData()
+            if self.model_combo.count()
+            else normalized_model_id(self.config.get("model_id"))
+        )
+        self.model_combo.clear()
+        configured_model_id = normalized_model_id(self.config.get("model_id"))
+        configured_model_path = Path(str(self.config.get("model_path", "")))
+        for model_id in WHISPER_MODELS:
+            current_available = (
+                model_id == configured_model_id
+                and whisper_model_available(configured_model_path, model_id)
+            )
+            installed = whisper_model_available(installed_model_path(model_id), model_id)
+            prefix = "✓ " if current_available or installed else ""
+            self.model_combo.addItem(prefix + model_label(model_id), model_id)
+        self._select_data(self.model_combo, selected)
+
+    def _open_model_manager(self) -> None:
+        manager = ModelManagerDialog(self.config, self)
+        manager.models_changed.connect(self._populate_model_combo)
+        manager.exec()
+        self._populate_model_combo()
+
+    def _update_hotkey_warning(self, _value: str = "") -> None:
+        key = self.hotkey_control.value()
+        label = hotkey_label(key)
+        translation_key = self.translation_hotkey_control.value()
         if key == translation_key:
             self.hotkey_warning.setStyleSheet("color: #c62828;")
             self.hotkey_warning.setText(
                 tr(
                     "Клавиши обычного ввода и перевода должны отличаться.",
                     "The dictation and translation hotkeys must be different.",
+                )
+            )
+        elif hotkey_is_reserved(key) or hotkey_is_reserved(translation_key):
+            self.hotkey_warning.setStyleSheet("color: #c62828;")
+            self.hotkey_warning.setText(
+                tr(
+                    "Это сочетание зарезервировано Windows. Выберите другое.",
+                    "This shortcut is reserved by Windows. Choose another one.",
                 )
             )
         elif key in {"left_alt", "right_alt", "left_ctrl", "right_ctrl", "caps_lock"}:
@@ -1036,9 +1487,11 @@ class SettingsDialog(QDialog):
                 f"<p>{tr('Локальный голосовой ввод для Windows 11 на базе Whisper и faster-whisper.', 'Local voice input for Windows 11 powered by Whisper and faster-whisper.')}</p>"
                 f"<p><b>{tr('Возможности', 'Features')}</b></p>"
                 f"<ul>"
-                f"<li>{tr('Диктовка по удержанию выбранной клавиши', 'Push-to-talk dictation with a configurable hotkey')}</li>"
+                f"<li>{tr('Диктовка по удержанию клавиши, сочетания или боковой кнопки мыши', 'Push-to-talk dictation with a key, key combination, or mouse side button')}</li>"
                 f"<li>{tr('Перевод речи на английский язык', 'Speech translation to English')}</li>"
+                f"<li>{tr('Отмена записи клавишей Esc и отмена последней вставки', 'Esc recording cancellation and undo for the latest insertion')}</li>"
                 f"<li>{tr('Пять моделей Whisper: Tiny, Base, Small, Medium и Large-v3', 'Five Whisper models: Tiny, Base, Small, Medium, and Large-v3')}</li>"
+                f"<li>{tr('Просмотр занятого моделями места и удаление неиспользуемых моделей', 'Model disk usage and removal of unused models')}</li>"
                 f"<li>{tr('Ускорение NVIDIA CUDA и режим CPU', 'NVIDIA CUDA acceleration and CPU mode')}</li>"
                 f"<li>{tr('Русский и английский интерфейс', 'Russian and English interface')}</li>"
                 f"</ul>"
@@ -1052,8 +1505,8 @@ class SettingsDialog(QDialog):
 
     def _save(self) -> None:
         if (
-            self.hotkey_combo.currentData()
-            == self.translation_hotkey_combo.currentData()
+            self.hotkey_control.value()
+            == self.translation_hotkey_control.value()
         ):
             QMessageBox.warning(
                 self,
@@ -1061,6 +1514,18 @@ class SettingsDialog(QDialog):
                 tr(
                     "Выберите разные клавиши для обычного ввода и перевода.",
                     "Choose different hotkeys for dictation and translation.",
+                ),
+            )
+            return
+        if hotkey_is_reserved(self.hotkey_control.value()) or hotkey_is_reserved(
+            self.translation_hotkey_control.value()
+        ):
+            QMessageBox.warning(
+                self,
+                tr("Системное сочетание", "System shortcut"),
+                tr(
+                    "Выбранное сочетание зарезервировано Windows.",
+                    "The selected shortcut is reserved by Windows.",
                 ),
             )
             return
@@ -1095,8 +1560,8 @@ class SettingsDialog(QDialog):
             {
                 "model_id": selected_model_id,
                 "model_path": str(selected_model_path),
-                "hotkey": self.hotkey_combo.currentData(),
-                "translation_hotkey": self.translation_hotkey_combo.currentData(),
+                "hotkey": self.hotkey_control.value(),
+                "translation_hotkey": self.translation_hotkey_control.value(),
                 "microphone": self.microphone_combo.currentData(),
                 "language": self.language_combo.currentData(),
                 "animation_style": self.animation_combo.currentData(),
@@ -1116,9 +1581,12 @@ class KeyboardHook(QObject):
     released = Signal()
     failed = Signal(str)
 
-    def __init__(self, vk_code: int) -> None:
+    def __init__(self, hotkey: Any, active_when: Any = None) -> None:
         super().__init__()
-        self.vk_code = vk_code
+        self.hotkey = normalize_hotkey(hotkey)
+        self.modifiers, self.trigger = hotkey_parts(self.hotkey)
+        self.vk_code = VK_CODES[self.trigger]
+        self.active_when = active_when
         self._thread: threading.Thread | None = None
         self._thread_id = 0
         self._hook = None
@@ -1128,7 +1596,11 @@ class KeyboardHook(QObject):
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             return
-        self._thread = threading.Thread(target=self._message_loop, name="keyboard-hook", daemon=True)
+        self._thread = threading.Thread(
+            target=self._message_loop,
+            name=f"keyboard-hook-{self.trigger}",
+            daemon=True,
+        )
         self._thread.start()
 
     def stop(self) -> None:
@@ -1144,16 +1616,25 @@ class KeyboardHook(QObject):
         def callback(n_code: int, w_param: int, l_param: int) -> int:
             if n_code >= 0:
                 event = ctypes.cast(l_param, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
+                if event.flags & LLKHF_INJECTED:
+                    return user32.CallNextHookEx(self._hook, n_code, w_param, l_param)
                 if event.vkCode == self.vk_code:
                     if w_param in (WM_KEYDOWN, WM_SYSKEYDOWN):
-                        if not self._is_down:
+                        active = self.active_when is None or bool(self.active_when())
+                        if (
+                            active
+                            and hotkey_modifiers_down(self.modifiers, self.trigger)
+                            and not self._is_down
+                        ):
                             self._is_down = True
                             self.pressed.emit()
+                        if self._is_down:
+                            return 1
                     elif w_param in (WM_KEYUP, WM_SYSKEYUP):
                         if self._is_down:
                             self._is_down = False
                             self.released.emit()
-                    return 1
+                            return 1
             return user32.CallNextHookEx(self._hook, n_code, w_param, l_param)
 
         self._callback = callback
@@ -1180,29 +1661,113 @@ class KeyboardHook(QObject):
         self._hook = None
 
 
+class MouseHotkeyHook(QObject):
+    pressed = Signal()
+    released = Signal()
+    failed = Signal(str)
+
+    def __init__(self, hotkey: Any) -> None:
+        super().__init__()
+        self.hotkey = normalize_hotkey(hotkey)
+        self.modifiers, self.trigger = hotkey_parts(self.hotkey)
+        self._thread: threading.Thread | None = None
+        self._thread_id = 0
+        self._hook = None
+        self._callback = None
+        self._is_down = False
+
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        self._thread = threading.Thread(
+            target=self._message_loop,
+            name=f"mouse-hook-{self.trigger}",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        if self._thread_id:
+            user32.PostThreadMessageW(self._thread_id, WM_QUIT, 0, 0)
+        if self._thread:
+            self._thread.join(timeout=1)
+
+    def _message_loop(self) -> None:
+        self._thread_id = kernel32.GetCurrentThreadId()
+        expected_button = 1 if self.trigger == "mouse_x1" else 2
+
+        @HOOKPROC
+        def callback(n_code: int, w_param: int, l_param: int) -> int:
+            if n_code >= 0 and w_param in (WM_XBUTTONDOWN, WM_XBUTTONUP):
+                event = ctypes.cast(l_param, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
+                if event.flags & LLMHF_INJECTED:
+                    return user32.CallNextHookEx(self._hook, n_code, w_param, l_param)
+                button = (int(event.mouseData) >> 16) & 0xFFFF
+                if button == expected_button:
+                    if w_param == WM_XBUTTONDOWN:
+                        if (
+                            hotkey_modifiers_down(self.modifiers, self.trigger)
+                            and not self._is_down
+                        ):
+                            self._is_down = True
+                            self.pressed.emit()
+                        if self._is_down:
+                            return 1
+                    elif self._is_down:
+                        self._is_down = False
+                        self.released.emit()
+                        return 1
+            return user32.CallNextHookEx(self._hook, n_code, w_param, l_param)
+
+        self._callback = callback
+        module = kernel32.GetModuleHandleW(None)
+        self._hook = user32.SetWindowsHookExW(WH_MOUSE_LL, self._callback, module, 0)
+        if not self._hook:
+            error_code = kernel32.GetLastError()
+            self.failed.emit(
+                tr(
+                    f"Не удалось установить перехват мыши (код Windows {error_code})",
+                    f"Could not install the mouse hook (Windows error {error_code})",
+                )
+            )
+            return
+        message = wintypes.MSG()
+        while user32.GetMessageW(ctypes.byref(message), None, 0, 0) > 0:
+            user32.TranslateMessage(ctypes.byref(message))
+            user32.DispatchMessageW(ctypes.byref(message))
+        user32.UnhookWindowsHookEx(self._hook)
+        self._hook = None
+
+
 class KeyStatePoller(QObject):
     """Reliable UI-thread fallback for keyboards whose hook events are swallowed."""
 
     pressed = Signal()
     released = Signal()
 
-    def __init__(self, vk_code: int) -> None:
+    def __init__(self, hotkey: Any) -> None:
         super().__init__()
-        self.vk_code = vk_code
+        self.hotkey = normalize_hotkey(hotkey)
+        self.modifiers, self.trigger = hotkey_parts(self.hotkey)
+        self.vk_code = (
+            MOUSE_TRIGGER_VKS[self.trigger]
+            if self.trigger in MOUSE_TRIGGER_VKS
+            else VK_CODES[self.trigger]
+        )
         self._is_down = False
         self.timer = QTimer(self)
         self.timer.setInterval(15)
         self.timer.timeout.connect(self._poll)
 
     def start(self) -> None:
-        self._is_down = bool(user32.GetAsyncKeyState(self.vk_code) & 0x8000)
+        self._is_down = self._current_state()
         self.timer.start()
 
     def stop(self) -> None:
         self.timer.stop()
 
     def _poll(self) -> None:
-        is_down = bool(user32.GetAsyncKeyState(self.vk_code) & 0x8000)
+        is_down = self._current_state()
         if is_down == self._is_down:
             return
         self._is_down = is_down
@@ -1210,6 +1775,12 @@ class KeyStatePoller(QObject):
             self.pressed.emit()
         else:
             self.released.emit()
+
+    def _current_state(self) -> bool:
+        return bool(user32.GetAsyncKeyState(self.vk_code) & 0x8000) and hotkey_modifiers_down(
+            self.modifiers,
+            self.trigger,
+        )
 
 
 class AudioRecorder(QObject):
@@ -2674,6 +3245,7 @@ class VoiceApp(QObject):
         self.model_error = ""
         self.state = "loading"
         self.foreground_window = 0
+        self.last_insertion: dict[str, Any] | None = None
         self.overlay = VoiceOverlay()
         self.overlay.position = str(
             self.config.get("overlay_position", "bottom_center")
@@ -2689,7 +3261,9 @@ class VoiceApp(QObject):
         self.recorder.auto_stopped.connect(self.finish_recording)
 
         self.keyboard_hooks: list[KeyboardHook] = []
+        self.mouse_hooks: list[MouseHotkeyHook] = []
         self.key_pollers: list[KeyStatePoller] = []
+        self.cancel_hook: KeyboardHook | None = None
         self.hotkey_label = ""
         self.translation_hotkey_label = ""
         self.recording_mode = "transcribe"
@@ -2717,6 +3291,13 @@ class VoiceApp(QObject):
         )
         self.settings_action.triggered.connect(self._queue_settings)
         self.tray_menu.addAction(self.settings_action)
+        self.undo_action = QAction(
+            tr("Отменить последнюю вставку", "Undo last insertion"),
+            self.tray_menu,
+        )
+        self.undo_action.setEnabled(False)
+        self.undo_action.triggered.connect(self._undo_last_insertion)
+        self.tray_menu.addAction(self.undo_action)
         self.tray_menu.addSeparator()
         self.quit_action = QAction(tr("Выход", "Exit"), self.tray_menu)
         self.quit_action.triggered.connect(self.quit)
@@ -2731,65 +3312,66 @@ class VoiceApp(QObject):
             key_poller.stop()
         for keyboard_hook in self.keyboard_hooks:
             keyboard_hook.stop()
+        for mouse_hook in self.mouse_hooks:
+            mouse_hook.stop()
+        if self.cancel_hook is not None:
+            self.cancel_hook.stop()
+            self.cancel_hook = None
         self.key_pollers.clear()
         self.keyboard_hooks.clear()
+        self.mouse_hooks.clear()
 
-        hotkey_name = str(self.config.get("hotkey", "right_alt")).lower()
-        if hotkey_name not in VK_CODES:
-            hotkey_name = "right_alt"
-            self.config["hotkey"] = hotkey_name
-        translation_hotkey_name = str(
-            self.config.get("translation_hotkey", "right_ctrl")
-        ).lower()
-        if (
-            translation_hotkey_name not in VK_CODES
-            or translation_hotkey_name == hotkey_name
-        ):
+        hotkey_name = normalize_hotkey(self.config.get("hotkey"), "right_alt")
+        translation_hotkey_name = normalize_hotkey(
+            self.config.get("translation_hotkey"), "right_ctrl"
+        )
+        if translation_hotkey_name == hotkey_name:
             translation_hotkey_name = (
                 "right_ctrl" if hotkey_name != "right_ctrl" else "f12"
             )
-            self.config["translation_hotkey"] = translation_hotkey_name
-
-        hotkey_labels = HOTKEY_LABELS.get(hotkey_name)
-        translation_hotkey_labels = HOTKEY_LABELS.get(
-            translation_hotkey_name
-        )
-        self.hotkey_label = (
-            localized_label(hotkey_labels)
-            if hotkey_labels is not None
-            else hotkey_name.upper()
-        )
-        self.translation_hotkey_label = (
-            localized_label(translation_hotkey_labels)
-            if translation_hotkey_labels is not None
-            else translation_hotkey_name.upper()
-        )
+        self.config["hotkey"] = hotkey_name
+        self.config["translation_hotkey"] = translation_hotkey_name
+        self.hotkey_label = hotkey_label(hotkey_name)
+        self.translation_hotkey_label = hotkey_label(translation_hotkey_name)
         self.overlay.hotkey_label = self.hotkey_label
 
         for key_name, mode in (
             (hotkey_name, "transcribe"),
             (translation_hotkey_name, "translate"),
         ):
-            vk_code = VK_CODES[key_name]
-            keyboard_hook = KeyboardHook(vk_code)
-            keyboard_hook.pressed.connect(
+            _modifiers, trigger = hotkey_parts(key_name)
+            input_hook: KeyboardHook | MouseHotkeyHook
+            if trigger in MOUSE_TRIGGER_VKS:
+                input_hook = MouseHotkeyHook(key_name)
+                self.mouse_hooks.append(input_hook)
+            else:
+                input_hook = KeyboardHook(key_name)
+                self.keyboard_hooks.append(input_hook)
+            input_hook.pressed.connect(
                 lambda active_mode=mode: self.begin_recording(active_mode)
             )
-            keyboard_hook.released.connect(
+            input_hook.released.connect(
                 lambda active_mode=mode: self.finish_recording(active_mode)
             )
-            keyboard_hook.failed.connect(self.show_error)
-            key_poller = KeyStatePoller(vk_code)
+            input_hook.failed.connect(self.show_error)
+            key_poller = KeyStatePoller(key_name)
             key_poller.pressed.connect(
                 lambda active_mode=mode: self.begin_recording(active_mode)
             )
             key_poller.released.connect(
                 lambda active_mode=mode: self.finish_recording(active_mode)
             )
-            self.keyboard_hooks.append(keyboard_hook)
             self.key_pollers.append(key_poller)
-            keyboard_hook.start()
+            input_hook.start()
             key_poller.start()
+
+        self.cancel_hook = KeyboardHook(
+            "escape",
+            active_when=lambda: self.state == "recording",
+        )
+        self.cancel_hook.pressed.connect(self.cancel_recording)
+        self.cancel_hook.failed.connect(self.show_error)
+        self.cancel_hook.start()
 
         log_message(
             "Hotkeys configured: "
@@ -3105,6 +3687,22 @@ class VoiceApp(QObject):
         worker.signals.failed.connect(self._transcription_failed)
         self.thread_pool.start(worker)
 
+    def cancel_recording(self) -> None:
+        if self.state != "recording":
+            return
+        try:
+            self.recorder.stop()
+        except Exception as exc:
+            log_message(f"Recording cancellation cleanup failed: {exc!r}")
+        self.state = "ready"
+        self.overlay.hide()
+        self.tray.setIcon(make_tray_icon(QColor(57, 208, 132)))
+        self.status_action.setText(
+            f"{tr('Готово', 'Ready')} · "
+            f"{self.active_device}/{self.active_compute_type}"
+        )
+        log_message("Recording cancelled with Escape")
+
     @staticmethod
     def _resample(audio: np.ndarray, source_rate: int, target_rate: int = 16000) -> np.ndarray:
         if source_rate == target_rate or audio.size == 0:
@@ -3215,6 +3813,7 @@ class VoiceApp(QObject):
                     f"Could not paste text: {exc}",
                 )
             )
+            self.state = "ready"
             return
         self.state = "ready"
         self.overlay.show_for_state("success")
@@ -3238,27 +3837,77 @@ class VoiceApp(QObject):
             clone.setData(mime_format, QByteArray(source.data(mime_format)))
         return clone
 
+    @staticmethod
+    def _send_ctrl_key(vk_code: int) -> None:
+        inputs = (INPUT * 4)(
+            INPUT(type=INPUT_KEYBOARD, ki=KEYBDINPUT(VK_CONTROL, 0, 0, 0, 0)),
+            INPUT(type=INPUT_KEYBOARD, ki=KEYBDINPUT(vk_code, 0, 0, 0, 0)),
+            INPUT(type=INPUT_KEYBOARD, ki=KEYBDINPUT(vk_code, 0, KEYEVENTF_KEYUP, 0, 0)),
+            INPUT(type=INPUT_KEYBOARD, ki=KEYBDINPUT(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0, 0)),
+        )
+        sent = user32.SendInput(4, inputs, ctypes.sizeof(INPUT))
+        if sent != 4:
+            raise OSError(f"Windows SendInput sent {sent} of 4 events")
+
+    def _undo_last_insertion(self) -> None:
+        insertion = self.last_insertion
+        if not insertion or insertion.get("undone"):
+            return
+        target = int(insertion.get("window") or 0)
+        if not target or not user32.IsWindow(target):
+            self.undo_action.setEnabled(False)
+            self.tray.showMessage(
+                APP_NAME,
+                tr(
+                    "Окно последней вставки больше недоступно.",
+                    "The window used for the last insertion is no longer available.",
+                ),
+                QSystemTrayIcon.MessageIcon.Information,
+                1800,
+            )
+            return
+        user32.SetForegroundWindow(target)
+        try:
+            self._send_ctrl_key(VK_Z)
+        except OSError as exc:
+            self.show_error(str(exc))
+            return
+        insertion["undone"] = True
+        self.undo_action.setEnabled(False)
+        log_message(f"Last insertion undone: hwnd={target}")
+
     def _paste_text(self, text: str) -> None:
         clipboard = QApplication.clipboard()
         previous = self._clone_mime_data(clipboard.mimeData())
         clipboard.setText(text)
         if self.foreground_window:
-            user32.SetForegroundWindow(self.foreground_window)
+            focused = bool(user32.SetForegroundWindow(self.foreground_window))
+            if not focused and user32.GetForegroundWindow() != self.foreground_window:
+                clipboard.setMimeData(previous)
+                raise OSError(
+                    tr(
+                        "Не удалось вернуть фокус в исходное окно",
+                        "Could not restore focus to the original window",
+                    )
+                )
 
-        inputs = (INPUT * 4)(
-            INPUT(type=INPUT_KEYBOARD, ki=KEYBDINPUT(VK_CONTROL, 0, 0, 0, 0)),
-            INPUT(type=INPUT_KEYBOARD, ki=KEYBDINPUT(VK_V, 0, 0, 0, 0)),
-            INPUT(type=INPUT_KEYBOARD, ki=KEYBDINPUT(VK_V, 0, KEYEVENTF_KEYUP, 0, 0)),
-            INPUT(type=INPUT_KEYBOARD, ki=KEYBDINPUT(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0, 0)),
-        )
-        sent = user32.SendInput(4, inputs, ctypes.sizeof(INPUT))
-        if sent != 4:
+        try:
+            self._send_ctrl_key(VK_V)
+        except OSError:
+            clipboard.setMimeData(previous)
             raise OSError(
                 tr(
                     "Windows не разрешила отправить Ctrl+V",
                     "Windows did not allow Ctrl+V to be sent",
                 )
             )
+
+        self.last_insertion = {
+            "text": text,
+            "window": int(self.foreground_window or 0),
+            "undone": False,
+        }
+        self.undo_action.setEnabled(bool(self.foreground_window))
 
         delay = int(self.config.get("paste_restore_delay_ms", 700))
         QTimer.singleShot(delay, lambda: clipboard.setMimeData(previous))
@@ -3286,6 +3935,10 @@ class VoiceApp(QObject):
             key_poller.stop()
         for keyboard_hook in self.keyboard_hooks:
             keyboard_hook.stop()
+        for mouse_hook in self.mouse_hooks:
+            mouse_hook.stop()
+        if self.cancel_hook is not None:
+            self.cancel_hook.stop()
         if self.recorder.is_recording:
             self.recorder.stop()
         self.tray.hide()

@@ -6,6 +6,14 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-07-31
+
+- Added configurable keyboard combinations and mouse side buttons for both
+  push-to-talk actions.
+- Added `Esc` cancellation for an active recording.
+- Added undo for the latest insertion.
+- Added model disk-usage reporting and removal of unused or incomplete models.
+
 ## [1.4.1] - 2026-07-31
 
 - Changed the default dictation hotkey to Right Alt.
