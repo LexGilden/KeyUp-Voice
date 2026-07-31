@@ -2,7 +2,7 @@
 
 [English version](README.md)
 
-## [⬇ Скачать KeyUp Voice для Windows](https://github.com/LexGilden/KeyUp-Voice/releases/latest)
+## [⬇ Скачать KeyUp Voice для Windows](https://github.com/LexGilden/KeyUp-Voice/releases)
 
 Последняя стабильная версия для Windows 11 x64.
 
@@ -33,7 +33,7 @@ KeyUp Voice — локальное приложение голосового в�
 
 ## Скачивание и установка
 
-1. Откройте раздел **[Releases](https://github.com/LexGilden/KeyUp-Voice/releases/latest)** репозитория.
+1. Откройте раздел **[Releases](https://github.com/LexGilden/KeyUp-Voice/releases)** репозитория.
 2. Скачайте `KeyUp-Voice-Setup-<версия>.exe`.
 3. Выберите русский или английский язык установщика.
 4. Запустите KeyUp Voice и выберите модель Whisper.
