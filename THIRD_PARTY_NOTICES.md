@@ -29,6 +29,12 @@ They are downloaded at runtime from the
 The selected repositories identify their license as MIT. Review the model card
 and license of each model before redistribution.
 
+Large-v3 Turbo is downloaded from
+[deepdml/faster-whisper-large-v3-turbo-ct2](https://huggingface.co/deepdml/faster-whisper-large-v3-turbo-ct2),
+whose model card identifies the license as MIT. User-supplied repositories may
+have different licenses; the inspection dialog displays the license declared by
+their model card. They are not redistributed with KeyUp Voice.
+
 ## NVIDIA CUDA runtime
 
 NVIDIA CUDA libraries are not committed to this repository or embedded in the

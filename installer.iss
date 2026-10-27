@@ -1,5 +1,5 @@
 #define MyAppName "KeyUp Voice"
-#define MyAppVersion "1.5.0"
+#define MyAppVersion "1.6.0"
 #define MyAppPublisher "LexGilden"
 #define MyAppExeName "KeyUpVoice.exe"
 
@@ -74,6 +74,8 @@ Root: HKCU; Subkey: "Software\LexGilden\KeyUp Voice"; ValueType: string; ValueNa
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:RunApplication}"; Flags: nowait postinstall skipifsilent
 
 [InstallDelete]
+; Only packaged libraries live here. Models and user configuration are separate.
+Type: filesandordirs; Name: "{app}\_internal"
 Type: files; Name: "{app}\Golos.exe"
 Type: files; Name: "{autodesktop}\Golos.lnk"
 Type: filesandordirs; Name: "{userprograms}\Golos"

@@ -6,6 +6,23 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-10-27
+
+- Added Large-v3 Turbo and Large-v2 with pinned, verified downloads.
+- Added public custom Whisper CTranslate2 repositories and Arabic language selection.
+- Download or resume missing models directly from Manage models without changing
+  the active model; show progress, cancellation, and retry controls.
+- Select existing local Whisper CTranslate2 folders without copying files;
+  removing a local entry from the model list never deletes its source files.
+- Disabled translation for Turbo and unverified custom models, with explanations.
+- Added optional daily stable-release notifications, release notes, and manual checks.
+- Restore the previous model if a newly selected model fails to load.
+- Stop hidden animation timers; hash downloads while streaming; discard cancelled
+  recordings without concatenating audio; remove unused sound playback code.
+- Allow hotkey assignment while Settings is open and Esc cancellation while holding modifiers.
+- Isolate the build DLL search path, validate the packaged executable before
+  creating an installer, and replace obsolete packaged libraries on upgrade.
+
 ## [1.5.0] - 2026-07-31
 
 - Added configurable keyboard combinations and mouse side buttons for both

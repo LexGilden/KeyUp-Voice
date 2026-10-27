@@ -29,7 +29,10 @@ mode.
 - Press `Esc` to cancel the current recording without recognition or insertion.
 - Undo the latest insertion from the tray menu.
 - Modern animated microphone indicator with seven visual styles.
-- Five multilingual Whisper models selectable at first launch or later.
+- Seven multilingual Whisper models, including Large-v3 Turbo and Large-v2.
+- Public custom Whisper CTranslate2 models from Hugging Face.
+- Arabic recognition language selection.
+- Optional daily GitHub release notifications and a manual update check.
 - View model disk usage and remove unused models or incomplete downloads.
 - Automatic NVIDIA GPU detection and optional CUDA acceleration.
 - CPU fallback for AMD, Intel, and systems without supported NVIDIA CUDA.
@@ -77,16 +80,48 @@ insertion is available from the tray menu.
 | Base | 141 MB | Lightweight everyday use |
 | Small | 464 MB | Better accuracy with moderate resource use |
 | Medium | 1.4 GB | Recommended quality/speed balance |
+| Large-v3 Turbo | 1.5 GB | Faster Large-v3 variant; dictation only |
+| Large-v2 | 2.9 GB | Alternative large model for language/dialect comparisons |
 | Large-v3 | 2.9 GB | Highest available accuracy |
 
 Installed models are kept separately. Switching to an installed model does not
 download it again. Missing models are downloaded after the selection is saved.
 Open **Settings → Manage models** to see actual disk usage and remove any model
 that is not active, including an incomplete download.
+Use **Download** or **Resume** to download models in advance without switching
+the active model. Select the downloaded model in Settings and click **Save** to switch.
 
 Model files come from the official
 [Systran faster-whisper collection](https://huggingface.co/collections/Systran/faster-whisper)
 and are pinned to specific revisions.
+
+Large-v3 Turbo uses the [deepdml CTranslate2 conversion](https://huggingface.co/deepdml/faster-whisper-large-v3-turbo-ct2).
+Turbo does not support translation to English: its translation hotkey is disabled
+and Settings explains why. CPU processing uses INT8; actual speed depends on hardware.
+
+To use a community fine-tune, choose **Settings → Add custom model**, enter
+`owner/model`, and check the repository. Public, ungated Whisper CTranslate2
+repositories are supported; Transformers, GGUF, and other architectures are not.
+After adding a model, select it and save Settings to download it. The app pins a
+commit, verifies file hashes, and never executes Python code from the repository.
+Custom models default to dictation only because translation support is unverified.
+If loading a newly selected model fails, the previous model is restored.
+Custom models can be removed through **Manage models**.
+Alternatively, click **Choose a folder on this computer** to add an existing
+Whisper CTranslate2 model. The folder must contain `model.bin`, `config.json`,
+`tokenizer.json`, and `vocabulary.json` or `vocabulary.txt`. GGUF and `.pt` files
+are not supported. Files are used directly from that folder, without copying
+or downloading. Keep the folder in place. **Remove from list** never deletes
+local model files; if moved, restore the folder or add it from its new location.
+
+## Update notifications
+
+The application checks GitHub for a newer stable release after startup and then
+at most once per day on successful checks. Network failures retry at hourly
+intervals without interrupting dictation. Disable automatic checks in Settings,
+or use **Check for updates** from the tray menu at any time. New versions show
+release notes and a link to the Releases page; installers are not run automatically.
+This feature starts with 1.6.0; older versions need to be updated manually first.
 
 ## GPU and CPU processing
 
@@ -102,8 +137,8 @@ CUDA libraries are downloaded from the official NVIDIA packages on PyPI.
 - Recognition and translation run locally.
 - Recorded audio is held in memory only for the current request.
 - Audio is discarded after processing and is not written to disk.
-- Network access is used only to download selected models and optional CUDA
-  components.
+- Network access is used for model inspection/downloads, optional CUDA components,
+  and GitHub release checks (automatic checks can be disabled).
 - Recognized text is placed on the clipboard temporarily; the previous
   clipboard contents are restored after insertion.
 

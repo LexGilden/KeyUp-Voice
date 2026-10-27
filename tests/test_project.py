@@ -53,7 +53,7 @@ class ProjectMetadataTests(unittest.TestCase):
     def test_supported_whisper_models_are_complete(self):
         self.assertEqual(
             set(app.WHISPER_MODELS),
-            {"tiny", "base", "small", "medium", "large-v3"},
+            {"tiny", "base", "small", "medium", "large-v3-turbo", "large-v2", "large-v3"},
         )
 
         for model_id, model in app.WHISPER_MODELS.items():

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ctypes
-import array
 import gc
 import hashlib
 import json
@@ -13,15 +12,17 @@ import threading
 import time
 import traceback
 import urllib.request
-import wave
 import winreg
 import zipfile
+import webbrowser
 from ctypes import wintypes
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import sounddevice as sd
+import model_sources
+import updates
 from PySide6.QtCore import (
     QByteArray,
     QMimeData,
@@ -55,9 +56,12 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QFileDialog,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
+    QTextBrowser,
     QMenu,
     QMessageBox,
     QProgressBar,
@@ -66,6 +70,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QAbstractItemView,
     QSpinBox,
+    QScrollArea,
     QStyle,
     QSystemTrayIcon,
     QVBoxLayout,
@@ -75,7 +80,7 @@ from PySide6.QtWidgets import (
 
 APP_NAME = "KeyUp Voice"
 LEGACY_APP_NAME = "Golos"
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.6.0"
 APP_DIR = Path(__file__).resolve().parent
 INSTALL_DIR = (
     Path(sys.executable).resolve().parent
@@ -131,6 +136,31 @@ WHISPER_MODELS: dict[str, dict[str, Any]] = {
             "vocabulary.txt": (459861, "34ce3fe1c5041027b3f8d42912270993f986dbc4bb34cf27f951e34a1e453913"),
         },
     },
+    "large-v3-turbo": {
+        "repository": "deepdml/faster-whisper-large-v3-turbo-ct2",
+        "revision": "4df90f75321148c3a29a9e2351b7ddf8f5b115a8",
+        "labels": ("Large-v3 Turbo — только диктовка", "Large-v3 Turbo — dictation only"),
+        "translation": False,
+        "turbo": True,
+        "files": {
+            "config.json": (2263, "b0253ea6c0d3bea6b1e19e91a02acfd3b53f4467362efcb5a3e6b16c9b3a9b7e"),
+            "model.bin": (1617884929, "e76620f83d5f5b69efd3d87e3dc180c1bd21df9fbebacfd4335e5e1efcc018da"),
+            "preprocessor_config.json": (340, "7ccc62c6f2765af1f3b46c00c9b5894426835a05021c8b9c01eecb6dfb542711"),
+            "tokenizer.json": (2710337, "297b13372ac43916285644fb9687add3cc62ee2a1adb60da3dc25cc94c1871fd"),
+            "vocabulary.json": (1068114, "c69260f2ab26d659b7c398f9a2b2b48ed0df16c3b47d7326782fd9cba71690c1"),
+        },
+    },
+    "large-v2": {
+        "repository": "Systran/faster-whisper-large-v2",
+        "revision": "f0fe81560cb8b68660e564f55dd99207059c092e",
+        "labels": ("Large-v2 — альтернативная большая модель", "Large-v2 — alternative large model"),
+        "files": {
+            "config.json": (2796, "d86b7a7664a12559d644aa210a32ce9a7e03913e794b7ea4fb7182de69e273a7"),
+            "model.bin": (3086912962, "bf2a9746382e1aa7ffff6b3a0d137ed9edbd9670c3b87e5d35f5e85e70d0333a"),
+            "tokenizer.json": (2203239, "fb7b63191e9bb045082c79fd742a3106a12c99513ab30df4a0d47fa6cb6fd0ab"),
+            "vocabulary.txt": (459861, "34ce3fe1c5041027b3f8d42912270993f986dbc4bb34cf27f951e34a1e453913"),
+        },
+    },
     "large-v3": {
         "repository": "Systran/faster-whisper-large-v3",
         "revision": "edaa852ec7e145841d8ffdb056a99866b5f0a478",
@@ -152,9 +182,8 @@ ROAMING_DIR = Path(os.environ.get("APPDATA", APP_DIR))
 DATA_DIR = ROAMING_DIR / APP_NAME
 LEGACY_DATA_DIR = ROAMING_DIR / LEGACY_APP_NAME
 CONFIG_PATH = DATA_DIR / "config.json"
+CUSTOM_CATALOG_PATH = DATA_DIR / "custom-models.json"
 LOG_PATH = DATA_DIR / "keyup-voice.log"
-SOUND_DIR = DATA_DIR / "sounds"
-_sound_lock = threading.Lock()
 _dll_directory_handles: list[Any] = []
 LEGACY_CONFIG_PATH = APP_DIR / "config.json"
 LEGACY_ROAMING_CONFIG_PATH = LEGACY_DATA_DIR / "config.json"
@@ -173,6 +202,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "paste_restore_delay_ms": 700,
     "sound_cues": False,
     "autostart": False,
+    "check_updates": True,
+    "last_update_check": 0,
     "overlay_position": "bottom_center",
     "animation_style": "live_ball",
 }
@@ -465,7 +496,6 @@ def set_autostart(enabled: bool) -> None:
 
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
-winmm = ctypes.windll.winmm
 
 WH_KEYBOARD_LL = 13
 WH_MOUSE_LL = 14
@@ -593,8 +623,6 @@ kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
 kernel32.CloseHandle.restype = wintypes.BOOL
 kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
 kernel32.GetModuleHandleW.restype = wintypes.HMODULE
-winmm.PlaySoundW.argtypes = [wintypes.LPCWSTR, wintypes.HMODULE, wintypes.DWORD]
-winmm.PlaySoundW.restype = wintypes.BOOL
 
 
 def display_adapters() -> list[str]:
@@ -626,8 +654,22 @@ def normalized_model_id(model_id: Any) -> str:
     return value if value in WHISPER_MODELS else DEFAULT_MODEL_ID
 
 
+def translation_supported(model_id: Any) -> bool:
+    return bool(WHISPER_MODELS[normalized_model_id(model_id)].get("translation", True))
+
+
+def translation_explanation(model_id: Any) -> str:
+    if WHISPER_MODELS[normalized_model_id(model_id)].get("turbo"):
+        return tr("Turbo предназначена для диктовки и не поддерживает перевод на английский. Выберите Medium или Large-v2/v3 для перевода.",
+                  "Turbo is designed for dictation and does not support translation to English. Select Medium or Large-v2/v3 to translate.")
+    return tr("Для пользовательской модели перевод отключён: его поддержка не подтверждена. Диктовка доступна.",
+              "Translation is disabled for this custom model because support is unverified. Dictation is available.")
+
+
 def installed_model_path(model_id: Any) -> Path:
     selected = normalized_model_id(model_id)
+    if WHISPER_MODELS[selected].get("local_path"):
+        return Path(WHISPER_MODELS[selected]["local_path"])
     return MODELS_DIR / f"faster-whisper-{selected}"
 
 
@@ -694,6 +736,10 @@ def safe_installed_model_path(model_id: Any) -> Path:
 
 def load_config() -> dict[str, Any]:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        WHISPER_MODELS.update(model_sources.load_catalog(CUSTOM_CATALOG_PATH))
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        log_message(f"Custom model catalog could not be read: {exc}")
     config = DEFAULT_CONFIG.copy()
     if not CONFIG_PATH.exists():
         for legacy_path in (
@@ -740,185 +786,6 @@ def log_message(message: str) -> None:
             log_file.write(f"[{timestamp}] {message.rstrip()}\n")
     except OSError:
         pass
-
-
-def _create_chime(
-    path: Path,
-    notes: list[tuple[float, float]],
-    wake_output: bool = False,
-    volume: float = 0.45,
-) -> None:
-    sample_rate = 44100
-    pcm = array.array("h")
-    if wake_output:
-        # A non-zero pilot wakes digital outputs; pure silence may be discarded.
-        pilot_frames = int(sample_rate * 0.38)
-        for index in range(pilot_frames):
-            fade = min(1.0, index / (sample_rate * 0.03))
-            pilot = 0.018 * fade * math.sin(
-                2.0 * math.pi * 1000.0 * index / sample_rate
-            )
-            pcm.append(int(32767 * pilot))
-        pcm.extend([0] * int(sample_rate * 0.04))
-    for frequency, duration in notes:
-        frame_count = int(sample_rate * duration)
-        attack = max(1, int(sample_rate * 0.012))
-        release = max(1, int(sample_rate * min(0.055, duration * 0.45)))
-        for index in range(frame_count):
-            if index < attack:
-                envelope = index / attack
-            elif index >= frame_count - release:
-                envelope = max(0.0, (frame_count - index - 1) / release)
-            else:
-                envelope = 1.0
-            phase = 2.0 * math.pi * frequency * index / sample_rate
-            tone = math.sin(phase) + 0.16 * math.sin(phase * 2.0)
-            pcm.append(int(32767 * volume * envelope * tone))
-        pcm.extend([0] * int(sample_rate * 0.018))
-
-    with wave.open(str(path), "wb") as output:
-        output.setnchannels(1)
-        output.setsampwidth(2)
-        output.setframerate(sample_rate)
-        output.writeframes(pcm.tobytes())
-
-
-def ensure_notification_sounds() -> dict[str, Path]:
-    SOUND_DIR.mkdir(parents=True, exist_ok=True)
-    paths = {
-        "start": SOUND_DIR / "start-v7.wav",
-        "success": SOUND_DIR / "success-v4.wav",
-    }
-    if not paths["start"].exists():
-        _create_chime(
-            paths["start"],
-            [(520.0, 0.075), (780.0, 0.11)],
-            wake_output=True,
-            volume=0.45,
-        )
-    if not paths["success"].exists():
-        _create_chime(
-            paths["success"],
-            [(590.0, 0.10), (740.0, 0.12), (990.0, 0.22)],
-        )
-    return paths
-
-
-def windows_sound_mapper_device() -> int | None:
-    """Return the WMME mapper that follows the current Windows default output."""
-    try:
-        for index, device in enumerate(sd.query_devices()):
-            if (
-                int(device["max_output_channels"]) > 0
-                and int(device["hostapi"]) == 0
-            ):
-                return index
-    except Exception as exc:
-        log_message(f"Could not resolve Windows sound mapper: {exc!r}")
-    return None
-
-
-def play_notification_sound(
-    kind: str,
-    output_device: Any = None,
-    blocking: bool = False,
-) -> None:
-    try:
-        path = ensure_notification_sounds()[kind]
-        log_message(
-            f"Notification sound queued: {kind}, device={output_device!r}"
-        )
-
-        def play() -> None:
-            try:
-                with _sound_lock:
-                    if output_device is None:
-                        flags = 0x00020000 | 0x00000002 | 0x00200000
-                        played = bool(winmm.PlaySoundW(str(path), None, flags))
-                        log_message(
-                            "Notification system playback finished: "
-                            f"kind={kind}, result={played}, path={str(path)!r}"
-                        )
-                        if not played:
-                            raise OSError("Windows PlaySoundW returned FALSE")
-                        return
-
-                    resolved_device = (
-                        int(output_device)
-                    )
-                    device_info = sd.query_devices(resolved_device, "output")
-                    host_info = sd.query_hostapis(int(device_info["hostapi"]))
-                    with wave.open(str(path), "rb") as source:
-                        source_sample_rate = source.getframerate()
-                        channels = source.getnchannels()
-                        pcm = np.frombuffer(
-                            source.readframes(source.getnframes()),
-                            dtype=np.int16,
-                        ).astype(np.float32) / 32768.0
-                    audio = pcm.reshape(-1, channels)
-                    sample_rate = int(device_info["default_samplerate"])
-                    if sample_rate != source_sample_rate and audio.size:
-                        target_length = max(
-                            1,
-                            round(
-                                audio.shape[0]
-                                * sample_rate
-                                / source_sample_rate
-                            ),
-                        )
-                        source_positions = np.arange(
-                            audio.shape[0],
-                            dtype=np.float64,
-                        )
-                        target_positions = np.linspace(
-                            0,
-                            audio.shape[0] - 1,
-                            target_length,
-                        )
-                        audio = np.column_stack(
-                            [
-                                np.interp(
-                                    target_positions,
-                                    source_positions,
-                                    audio[:, channel],
-                                )
-                                for channel in range(channels)
-                            ]
-                        ).astype(np.float32)
-                    peak = float(np.max(np.abs(audio))) if audio.size else 0.0
-                    log_message(
-                        "Notification output opened: "
-                        f"kind={kind}, requested={output_device!r}, "
-                        f"resolved={resolved_device!r}, "
-                        f"name={device_info['name']!r}, "
-                        f"hostapi={host_info['name']!r}, "
-                        f"source_rate={source_sample_rate}, "
-                        f"output_rate={sample_rate}, peak={peak:.3f}"
-                    )
-                    with sd.OutputStream(
-                        samplerate=sample_rate,
-                        channels=channels,
-                        dtype="float32",
-                        device=resolved_device,
-                    ) as stream:
-                        underflowed = stream.write(audio)
-                log_message(
-                    f"Notification sound played: {kind}, "
-                    f"device={resolved_device!r}, underflow={underflowed}"
-                )
-            except Exception as exc:
-                log_message(f"Notification sound failed: {kind}: {exc!r}")
-
-        if blocking:
-            play()
-        else:
-            threading.Thread(
-                target=play,
-                name=f"notification-sound-{kind}",
-                daemon=True,
-            ).start()
-    except Exception as exc:
-        log_message(f"Notification sound failed: {exc!r}")
 
 
 def cuda_runtime_available() -> bool:
@@ -1114,6 +981,205 @@ class HotkeyCaptureButton(QPushButton):
         super().mousePressEvent(event)
 
 
+class CustomModelDialog(QDialog):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.model_id: str | None = None
+        self.spec: dict | None = None
+        self.busy = False
+        self.setWindowTitle(tr("Своя модель Whisper", "Custom Whisper model"))
+        self.setMinimumWidth(560)
+        layout = QVBoxLayout(self)
+        intro = QLabel(tr(
+            "Укажите репозиторий Hugging Face (автор/модель) или выберите папку на компьютере. Нужна Whisper-модель в формате CTranslate2, не GGUF и не .pt. В папке должны быть model.bin, config.json, tokenizer.json и vocabulary.json или vocabulary.txt. Перевод для своих моделей отключён; диктовка доступна.",
+            "Enter a Hugging Face repository (owner/model) or choose a folder on this computer. A Whisper CTranslate2 model is required, not GGUF or .pt. The folder must contain model.bin, config.json, tokenizer.json and vocabulary.json or vocabulary.txt. Custom models support dictation; translation is disabled."))
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+        self.repository = QLineEdit()
+        self.repository.setPlaceholderText("owner/whisper-model-ct2")
+        layout.addWidget(self.repository)
+        self.status = QLabel()
+        self.status.setTextFormat(Qt.TextFormat.PlainText)
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
+        self.check_button = QPushButton(tr("Проверить модель", "Check model"))
+        self.check_button.clicked.connect(self._check)
+        layout.addWidget(self.check_button)
+        self.local_button = QPushButton(tr("Выбрать папку на компьютере…", "Choose a folder on this computer…"))
+        self.local_button.clicked.connect(self._choose_local)
+        layout.addWidget(self.local_button)
+        self.add_button = QPushButton(tr("Добавить в список", "Add to model list"))
+        self.add_button.setEnabled(False)
+        self.add_button.clicked.connect(self._add)
+        layout.addWidget(self.add_button)
+        self.repository.textChanged.connect(self._reset)
+
+    def _reset(self) -> None:
+        self.spec = None
+        self.add_button.setEnabled(False)
+
+    def _check(self) -> None:
+        self._begin_check(model_sources.inspect_repository, self.repository.text())
+
+    def _choose_local(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, tr("Выберите папку модели Whisper CTranslate2", "Choose a Whisper CTranslate2 model folder"))
+        if folder:
+            self._begin_check(model_sources.inspect_local_directory, folder)
+
+    def _begin_check(self, function: Any, value: str) -> None:
+        self.busy = True
+        self.spec = None
+        self.repository.setEnabled(False)
+        self.check_button.setEnabled(False)
+        self.local_button.setEnabled(False)
+        self.add_button.setEnabled(False)
+        self.status.setText(tr("Проверка файлов и совместимости…", "Checking files and compatibility…"))
+        worker = FunctionWorker(function, value)
+        worker.signals.succeeded.connect(self._checked)
+        worker.signals.failed.connect(self._failed)
+        self.worker = worker
+        QThreadPool.globalInstance().start(worker)
+
+    def _checked(self, result: object) -> None:
+        self.busy = False
+        self.repository.setEnabled(True)
+        self.check_button.setEnabled(True)
+        self.local_button.setEnabled(True)
+        self.spec = dict(result)
+        size = format_file_size(sum(item[0] for item in self.spec["files"].values()))
+        if self.spec.get("local_path"):
+            self.status.setText(tr(
+                f"Локальная модель проверена: {size}.\n{self.spec['local_path']}\nФайлы используются прямо из этой папки: переносить их не нужно. Не переименовывайте и не перемещайте папку после добавления. Удаление из списка не удалит файлы.",
+                f"Local model verified: {size}.\n{self.spec['local_path']}\nFiles are used directly from this folder; no copying is needed. Do not rename or move it after adding. Removing it from the list will not delete its files."))
+            self.add_button.setEnabled(True)
+            return
+        self.status.setText(tr(
+            f"Совместимые файлы Whisper CTranslate2 найдены. Загрузка: {size}. Лицензия: {self.spec['license']}.\nМодель будет скачана после выбора и сохранения настроек. Качество сторонних моделей зависит от автора.",
+            f"Whisper CTranslate2 files found. Download: {size}. License: {self.spec['license']}.\nThe model will be downloaded after you select it and save Settings. Community model quality depends on its author."))
+        self.add_button.setEnabled(True)
+
+    def _failed(self, details: str) -> None:
+        self.busy = False
+        self.repository.setEnabled(True)
+        self.check_button.setEnabled(True)
+        self.local_button.setEnabled(True)
+        self.status.setText(tr("Проверка не удалась. Нужна совместимая модель Whisper CTranslate2 с полным набором файлов. ",
+                               "Check failed. A compatible Whisper CTranslate2 model with all required files is needed. ") + details.strip().splitlines()[-1])
+
+    def _add(self) -> None:
+        if self.spec is None:
+            return
+        key = model_sources.custom_id(self.spec)
+        catalog = dict(WHISPER_MODELS)
+        catalog[key] = self.spec
+        try:
+            model_sources.save_catalog(CUSTOM_CATALOG_PATH, catalog)
+        except OSError as exc:
+            QMessageBox.warning(self, APP_NAME, str(exc))
+            return
+        WHISPER_MODELS[key] = self.spec
+        self.model_id = key
+        self.accept()
+
+    def reject(self) -> None:
+        if not self.busy:
+            super().reject()
+
+    def closeEvent(self, event: Any) -> None:
+        if self.busy:
+            event.ignore()
+        else:
+            super().closeEvent(event)
+
+
+class ModelDownloadDialog(QDialog):
+    """Download one model without changing the active model or configuration."""
+
+    def __init__(self, model_id: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.model_id = model_id
+        self.worker: ComponentInstallWorker | None = None
+        self.installing = False
+        self.cancelling = False
+        self.setWindowTitle(tr("Скачивание модели", "Download model"))
+        self.setMinimumWidth(520)
+        layout = QVBoxLayout(self)
+        name = QLabel(model_label(model_id))
+        name.setWordWrap(True)
+        layout.addWidget(name)
+        hint = QLabel(tr(
+            "Текущая модель не изменится. После скачивания выберите модель в настройках и нажмите «Сохранить», чтобы переключиться на неё.",
+            "The current model will not change. After downloading, select this model in Settings and click Save to switch to it."))
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        self.status_label = QLabel(tr("Подготовка загрузки…", "Preparing download…"))
+        self.status_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+        self.progress = QProgressBar()
+        layout.addWidget(self.progress)
+        self.progress_details = QLabel()
+        layout.addWidget(self.progress_details)
+        self.retry_button = QPushButton(tr("Повторить", "Retry"))
+        self.retry_button.clicked.connect(self._start)
+        self.retry_button.hide()
+        layout.addWidget(self.retry_button)
+        self.cancel_button = QPushButton(tr("Отмена", "Cancel"))
+        self.cancel_button.clicked.connect(self.reject)
+        layout.addWidget(self.cancel_button)
+
+    def _start(self) -> None:
+        if self.installing:
+            return
+        self.installing = True
+        self.cancelling = False
+        self.retry_button.hide()
+        self.cancel_button.setEnabled(True)
+        self.cancel_button.setText(tr("Отмена", "Cancel"))
+        self.worker = ComponentInstallWorker(True, False, self.model_id, installed_model_path(self.model_id))
+        self.worker.signals.status.connect(self.status_label.setText)
+        self.worker.signals.progress.connect(self._progress)
+        self.worker.signals.succeeded.connect(self._completed)
+        self.worker.signals.failed.connect(self._failed)
+        QThreadPool.globalInstance().start(self.worker)
+
+    def _progress(self, label: str, current: object, total: object) -> None:
+        if not self.cancelling:
+            self.status_label.setText(label)
+        self.progress.setValue(min(100, round(int(current) * 100 / max(1, int(total)))))
+        self.progress_details.setText(f"{format_file_size(int(current))} / {format_file_size(int(total))}")
+
+    def _completed(self, _result: object) -> None:
+        self.installing = False
+        self.accept()
+
+    def _failed(self, message: str) -> None:
+        self.installing = False
+        if self.cancelling:
+            super().reject()
+            return
+        self.status_label.setText(tr(f"Не удалось скачать модель: {message}", f"Could not download model: {message}"))
+        self.retry_button.show()
+        self.cancel_button.setEnabled(True)
+        self.cancel_button.setText(tr("Закрыть", "Close"))
+
+    def reject(self) -> None:
+        if self.installing and self.worker is not None:
+            self.cancelling = True
+            self.worker.cancel()
+            self.cancel_button.setEnabled(False)
+            self.status_label.setText(tr("Остановка загрузки…", "Stopping download…"))
+            return
+        super().reject()
+
+    def closeEvent(self, event: Any) -> None:
+        if self.installing:
+            self.reject()
+            event.ignore()
+        else:
+            super().closeEvent(event)
+
+
 class ModelManagerDialog(QDialog):
     models_changed = Signal()
 
@@ -1124,13 +1190,13 @@ class ModelManagerDialog(QDialog):
         self.active_model_path = Path(str(config.get("model_path", ""))).resolve()
         self.setWindowTitle(tr("Управление моделями", "Manage Whisper Models"))
         self.setWindowIcon(make_tray_icon(QColor(57, 208, 132)))
-        self.resize(700, 360)
+        self.resize(840, 400)
 
         layout = QVBoxLayout(self)
         description = QLabel(
             tr(
-                "Установленные модели хранятся отдельно. Активную модель удалить нельзя.",
-                "Installed models are stored separately. The active model cannot be removed.",
+                "Модели можно скачать заранее, не меняя текущую. Активную модель удалить нельзя.",
+                "Download models in advance without switching the current model. The active model cannot be removed.",
             )
         )
         description.setWordWrap(True)
@@ -1148,6 +1214,7 @@ class ModelManagerDialog(QDialog):
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(36)
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
@@ -1163,27 +1230,36 @@ class ModelManagerDialog(QDialog):
         self._refresh()
 
     def _is_active(self, model_id: str, path: Path) -> bool:
-        return (
-            model_id == self.active_model_id
-            and path.resolve() == self.active_model_path
-        )
+        # The same directory can also be added under a custom/local alias.
+        return path.resolve() == self.active_model_path
 
     def _refresh(self) -> None:
         self.table.setRowCount(0)
         total_size = 0
+        counted_paths: set[Path] = set()
         for model_id in WHISPER_MODELS:
             path = installed_model_path(model_id)
+            local = bool(WHISPER_MODELS[model_id].get("local_path"))
             installed = whisper_model_available(path, model_id)
             present = path.is_dir()
             active = self._is_active(model_id, path)
-            size = directory_size(path) if path.is_dir() else 0
-            total_size += size
+            size = (sum((path / name).stat().st_size for name in model_files(model_id) if (path / name).is_file())
+                    if local else directory_size(path) if path.is_dir() else 0)
+            resolved_path = path.resolve()
+            if resolved_path not in counted_paths:
+                total_size += size
+                counted_paths.add(resolved_path)
             row = self.table.rowCount()
             self.table.insertRow(row)
             self.table.setItem(row, 0, QTableWidgetItem(model_label(model_id)))
+            self.table.item(row, 0).setToolTip(model_label(model_id))
             status = (
                 tr("Активна", "Active")
                 if active
+                else tr("Локальная", "Local")
+                if local and installed
+                else tr("Файлы недоступны", "Files unavailable")
+                if local
                 else tr("Установлена", "Installed")
                 if installed
                 else tr("Загрузка не завершена", "Incomplete download")
@@ -1196,26 +1272,54 @@ class ModelManagerDialog(QDialog):
                 2,
                 QTableWidgetItem(format_file_size(size) if size else "—"),
             )
-            remove_button = QPushButton(tr("Удалить", "Remove"))
-            remove_button.setEnabled(present and not active)
+            remove_button = QPushButton(tr("Убрать из списка", "Remove from list") if local else tr("Удалить", "Remove"))
+            remove_button.setEnabled((present or WHISPER_MODELS[model_id].get("custom", False)) and not active)
             remove_button.clicked.connect(
                 lambda _checked=False, selected=model_id: self._remove_model(selected)
             )
-            self.table.setCellWidget(row, 3, remove_button)
+            actions = QWidget()
+            action_layout = QHBoxLayout(actions)
+            action_layout.setContentsMargins(2, 2, 2, 2)
+            if not installed and not active and not local:
+                download_button = QPushButton(tr("Докачать", "Resume") if present else tr("Скачать", "Download"))
+                download_button.clicked.connect(
+                    lambda _checked=False, selected=model_id: self._download_model(selected)
+                )
+                action_layout.addWidget(download_button)
+            action_layout.addWidget(remove_button)
+            self.table.setCellWidget(row, 3, actions)
         self.total_label.setText(
             f"{tr('Всего занято моделями:', 'Total model storage:')} "
             f"<b>{format_file_size(total_size)}</b>"
         )
 
-    def _remove_model(self, model_id: str) -> None:
-        path = safe_installed_model_path(model_id)
-        if self._is_active(model_id, path) or not path.is_dir():
+    def _download_model(self, model_id: str) -> None:
+        path = installed_model_path(model_id)
+        if WHISPER_MODELS[model_id].get("local_path") or self._is_active(model_id, path) or whisper_model_available(path, model_id):
             return
-        size = directory_size(path)
+        dialog = ModelDownloadDialog(model_id, self)
+        QTimer.singleShot(0, dialog._start)
+        dialog.exec()
+        # Refresh even after cancellation: partial files can now occupy space.
+        self._refresh()
+        self.models_changed.emit()
+
+    def _remove_model(self, model_id: str) -> None:
+        local = bool(WHISPER_MODELS[model_id].get("local_path"))
+        try:
+            path = installed_model_path(model_id) if local else safe_installed_model_path(model_id)
+        except ValueError as exc:
+            QMessageBox.warning(self, APP_NAME, str(exc))
+            return
+        custom = bool(WHISPER_MODELS[model_id].get("custom"))
+        if self._is_active(model_id, path) or (not path.is_dir() and not custom):
+            return
+        size = 0 if local else directory_size(path)
         answer = QMessageBox.question(
             self,
             tr("Удалить модель?", "Remove model?"),
-            tr(
+            tr("Убрать локальную модель из списка? Её файлы останутся на компьютере.",
+               "Remove the local model from the list? Its files will remain on this computer.") if local else tr(
                 f"Удалить {model_label(model_id)} и освободить {format_file_size(size)}?",
                 f"Remove {model_label(model_id)} and free {format_file_size(size)}?",
             ),
@@ -1223,7 +1327,12 @@ class ModelManagerDialog(QDialog):
         if answer != QMessageBox.StandardButton.Yes:
             return
         try:
-            shutil.rmtree(path)
+            if not local and path.is_dir():
+                shutil.rmtree(path)
+            if custom:
+                catalog = {key: spec for key, spec in WHISPER_MODELS.items() if key != model_id}
+                model_sources.save_catalog(CUSTOM_CATALOG_PATH, catalog)
+                WHISPER_MODELS.pop(model_id)
         except OSError as exc:
             QMessageBox.critical(
                 self,
@@ -1246,7 +1355,7 @@ class SettingsDialog(QDialog):
             tr(f"Настройки {APP_NAME}", f"{APP_NAME} Settings")
         )
         self.setWindowIcon(make_tray_icon(QColor(57, 208, 132)))
-        self.setMinimumWidth(480)
+        self.setMinimumWidth(600)
 
         layout = QVBoxLayout(self)
         intro = QLabel(
@@ -1314,6 +1423,7 @@ class SettingsDialog(QDialog):
             (tr("Русский", "Russian"), "ru"),
             (tr("Автоопределение", "Auto-detect"), None),
             (tr("Английский", "English"), "en"),
+            (tr("Арабский", "Arabic"), "ar"),
             (tr("Немецкий", "German"), "de"),
             (tr("Французский", "French"), "fr"),
             (tr("Испанский", "Spanish"), "es"),
@@ -1370,10 +1480,22 @@ class SettingsDialog(QDialog):
 
         self.model_combo = QComboBox()
         self._populate_model_combo()
+        self.model_combo.currentIndexChanged.connect(self._update_model_capabilities)
         form.addRow(
             tr("Модель Whisper:", "Whisper model:"),
             self.model_combo,
         )
+
+        self.model_notice = QLabel()
+        self.model_notice.setWordWrap(True)
+        form.addRow("", self.model_notice)
+        self._update_model_capabilities()
+        custom_button = QPushButton(tr("Добавить свою модель…", "Add custom model…"))
+        custom_button.clicked.connect(self._add_custom_model)
+        form.addRow(tr("Своя модель:", "Custom model:"), custom_button)
+        self.update_check = QCheckBox(tr("Сообщать о новых версиях на GitHub", "Notify me about new GitHub releases"))
+        self.update_check.setChecked(bool(config.get("check_updates", True)))
+        form.addRow(tr("Обновления:", "Updates:"), self.update_check)
 
         manage_models_button = QPushButton(
             tr("Управление моделями…", "Manage models…")
@@ -1394,7 +1516,14 @@ class SettingsDialog(QDialog):
         about_button = QPushButton(tr("О программе…", "About…"))
         about_button.clicked.connect(self._show_about)
         form.addRow(f"{APP_NAME}:", about_button)
-        layout.addLayout(form)
+        form_widget = QWidget()
+        form_widget.setLayout(form)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(form_widget)
+        layout.addWidget(scroll)
+        screen = QApplication.primaryScreen()
+        self.resize(680, min(780, screen.availableGeometry().height() - 80) if screen else 720)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
@@ -1435,12 +1564,26 @@ class SettingsDialog(QDialog):
             prefix = "✓ " if current_available or installed else ""
             self.model_combo.addItem(prefix + model_label(model_id), model_id)
         self._select_data(self.model_combo, selected)
+        if self.model_combo.findData(selected) < 0:
+            self._select_data(self.model_combo, configured_model_id)
 
     def _open_model_manager(self) -> None:
         manager = ModelManagerDialog(self.config, self)
         manager.models_changed.connect(self._populate_model_combo)
         manager.exec()
         self._populate_model_combo()
+
+    def _add_custom_model(self) -> None:
+        dialog = CustomModelDialog(self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._populate_model_combo()
+            self._select_data(self.model_combo, dialog.model_id)
+
+    def _update_model_capabilities(self, _index: int = 0) -> None:
+        model_id = self.model_combo.currentData()
+        supported = translation_supported(model_id)
+        self.translation_hotkey_control.setEnabled(supported)
+        self.model_notice.setText("" if supported else translation_explanation(model_id))
 
     def _update_hotkey_warning(self, _value: str = "") -> None:
         key = self.hotkey_control.value()
@@ -1490,7 +1633,7 @@ class SettingsDialog(QDialog):
                 f"<li>{tr('Диктовка по удержанию клавиши, сочетания или боковой кнопки мыши', 'Push-to-talk dictation with a key, key combination, or mouse side button')}</li>"
                 f"<li>{tr('Перевод речи на английский язык', 'Speech translation to English')}</li>"
                 f"<li>{tr('Отмена записи клавишей Esc и отмена последней вставки', 'Esc recording cancellation and undo for the latest insertion')}</li>"
-                f"<li>{tr('Пять моделей Whisper: Tiny, Base, Small, Medium и Large-v3', 'Five Whisper models: Tiny, Base, Small, Medium, and Large-v3')}</li>"
+                f"<li>{tr('Семь моделей Whisper, включая Turbo и Large-v2, и свои модели с Hugging Face', 'Seven Whisper models including Turbo and Large-v2, plus custom Hugging Face models')}</li>"
                 f"<li>{tr('Просмотр занятого моделями места и удаление неиспользуемых моделей', 'Model disk usage and removal of unused models')}</li>"
                 f"<li>{tr('Ускорение NVIDIA CUDA и режим CPU', 'NVIDIA CUDA acceleration and CPU mode')}</li>"
                 f"<li>{tr('Русский и английский интерфейс', 'Russian and English interface')}</li>"
@@ -1569,6 +1712,7 @@ class SettingsDialog(QDialog):
                 "max_recording_seconds": self.max_duration.value(),
                 "sound_cues": False,
                 "autostart": self.autostart.isChecked(),
+                "check_updates": self.update_check.isChecked(),
             }
         )
         save_config(updated)
@@ -1581,12 +1725,13 @@ class KeyboardHook(QObject):
     released = Signal()
     failed = Signal(str)
 
-    def __init__(self, hotkey: Any, active_when: Any = None) -> None:
+    def __init__(self, hotkey: Any, active_when: Any = None, ignore_modifiers: bool = False) -> None:
         super().__init__()
         self.hotkey = normalize_hotkey(hotkey)
         self.modifiers, self.trigger = hotkey_parts(self.hotkey)
         self.vk_code = VK_CODES[self.trigger]
         self.active_when = active_when
+        self.ignore_modifiers = ignore_modifiers
         self._thread: threading.Thread | None = None
         self._thread_id = 0
         self._hook = None
@@ -1623,7 +1768,7 @@ class KeyboardHook(QObject):
                         active = self.active_when is None or bool(self.active_when())
                         if (
                             active
-                            and hotkey_modifiers_down(self.modifiers, self.trigger)
+                            and (self.ignore_modifiers or hotkey_modifiers_down(self.modifiers, self.trigger))
                             and not self._is_down
                         ):
                             self._is_down = True
@@ -1666,9 +1811,10 @@ class MouseHotkeyHook(QObject):
     released = Signal()
     failed = Signal(str)
 
-    def __init__(self, hotkey: Any) -> None:
+    def __init__(self, hotkey: Any, active_when: Any = None) -> None:
         super().__init__()
         self.hotkey = normalize_hotkey(hotkey)
+        self.active_when = active_when
         self.modifiers, self.trigger = hotkey_parts(self.hotkey)
         self._thread: threading.Thread | None = None
         self._thread_id = 0
@@ -1706,7 +1852,8 @@ class MouseHotkeyHook(QObject):
                 if button == expected_button:
                     if w_param == WM_XBUTTONDOWN:
                         if (
-                            hotkey_modifiers_down(self.modifiers, self.trigger)
+                            (self.active_when is None or self.active_when())
+                            and hotkey_modifiers_down(self.modifiers, self.trigger)
                             and not self._is_down
                         ):
                             self._is_down = True
@@ -1745,9 +1892,10 @@ class KeyStatePoller(QObject):
     pressed = Signal()
     released = Signal()
 
-    def __init__(self, hotkey: Any) -> None:
+    def __init__(self, hotkey: Any, active_when: Any = None) -> None:
         super().__init__()
         self.hotkey = normalize_hotkey(hotkey)
+        self.active_when = active_when
         self.modifiers, self.trigger = hotkey_parts(self.hotkey)
         self.vk_code = (
             MOUSE_TRIGGER_VKS[self.trigger]
@@ -1768,6 +1916,9 @@ class KeyStatePoller(QObject):
 
     def _poll(self) -> None:
         is_down = self._current_state()
+        if self.active_when is not None and not self.active_when():
+            self._is_down = is_down
+            return
         if is_down == self._is_down:
             return
         self._is_down = is_down
@@ -1841,7 +1992,7 @@ class AudioRecorder(QObject):
         )
         self.stream.start()
 
-    def stop(self) -> tuple[np.ndarray, int, float]:
+    def stop(self, discard: bool = False) -> tuple[np.ndarray, int, float]:
         stream = self.stream
         self.stream = None
         duration = max(0.0, time.monotonic() - self.started_at)
@@ -1851,7 +2002,7 @@ class AudioRecorder(QObject):
         with self._lock:
             chunks = self.chunks
             self.chunks = []
-        audio = np.concatenate(chunks) if chunks else np.empty(0, dtype=np.float32)
+        audio = np.concatenate(chunks) if chunks and not discard else np.empty(0, dtype=np.float32)
         return audio, self.sample_rate, duration
 
 
@@ -1909,11 +2060,11 @@ class ComponentInstallWorker(QRunnable):
         if self.cancel_event.is_set():
             raise RuntimeError(tr("Загрузка отменена", "Download cancelled"))
 
-    @staticmethod
-    def _sha256(path: Path) -> str:
+    def _sha256(self, path: Path) -> str:
         digest = hashlib.sha256()
         with path.open("rb") as source:
             while chunk := source.read(4 * 1024 * 1024):
+                self._check_cancelled()
                 digest.update(chunk)
         return digest.hexdigest()
 
@@ -1944,6 +2095,9 @@ class ComponentInstallWorker(QRunnable):
             self.signals.progress.emit(label, expected_size, expected_size)
             return destination
         downloaded = partial.stat().st_size if partial.is_file() else 0
+        # A complete but corrupt (or oversized) partial cannot be resumed.
+        if downloaded >= expected_size:
+            downloaded = 0
         headers = {"User-Agent": f"{APP_NAME}/{APP_VERSION}"}
         if downloaded:
             headers["Range"] = f"bytes={downloaded}-"
@@ -1952,7 +2106,13 @@ class ComponentInstallWorker(QRunnable):
         if downloaded and getattr(response, "status", 200) != 206:
             downloaded = 0
         mode = "ab" if downloaded else "wb"
+        digest = hashlib.sha256()
         with response, partial.open(mode) as output:
+            if downloaded:
+                with partial.open("rb") as prefix:
+                    while chunk := prefix.read(4 * 1024 * 1024):
+                        self._check_cancelled()
+                        digest.update(chunk)
             self.signals.progress.emit(label, downloaded, expected_size)
             while True:
                 self._check_cancelled()
@@ -1960,7 +2120,10 @@ class ComponentInstallWorker(QRunnable):
                 if not chunk:
                     break
                 output.write(chunk)
+                digest.update(chunk)
                 downloaded += len(chunk)
+                if downloaded > expected_size:
+                    raise RuntimeError("Download exceeds the expected file size")
                 self.signals.progress.emit(label, downloaded, expected_size)
 
         if partial.stat().st_size != expected_size:
@@ -1975,7 +2138,7 @@ class ComponentInstallWorker(QRunnable):
         self.signals.status.emit(
             tr(f"Проверка {label}…", f"Verifying {label}…")
         )
-        actual_hash = self._sha256(partial)
+        actual_hash = digest.hexdigest()
         if actual_hash != expected_sha256:
             partial.unlink(missing_ok=True)
             raise RuntimeError(
@@ -1989,6 +2152,9 @@ class ComponentInstallWorker(QRunnable):
 
     def _install_whisper(self) -> None:
         specification = WHISPER_MODELS[self.model_id]
+        if specification.get("local_path"):
+            raise RuntimeError(tr("Локальная модель недоступна. Восстановите её папку или выберите другую модель.",
+                                  "Local model unavailable. Restore its folder or choose another model."))
         repository = str(specification["repository"])
         revision = str(specification["revision"])
         self.target_model_path.mkdir(parents=True, exist_ok=True)
@@ -2357,6 +2523,9 @@ class ComponentSetupDialog(QDialog):
             self.model_id,
         ):
             status = tr("уже установлена", "already installed")
+        elif WHISPER_MODELS[self.model_id].get("local_path"):
+            status = tr("локальная папка недоступна — восстановите файлы или выберите другую модель",
+                        "local folder unavailable — restore the files or select another model")
         else:
             status = tr("будет загружена", "will be downloaded")
         self.model_details.setText(
@@ -2370,7 +2539,12 @@ class ComponentSetupDialog(QDialog):
     def _start(self) -> None:
         if self.installing:
             return
+        if self.install_model and WHISPER_MODELS[self.model_id].get("local_path"):
+            self.status_label.setText(tr("Локальную модель нельзя скачать. Восстановите выбранную папку или выберите другую модель.",
+                                         "A local model cannot be downloaded. Restore the selected folder or choose another model."))
+            return
         self.installing = True
+        self.model_combo.setEnabled(False)
         self.install_button.setEnabled(False)
         self.cancel_button.setText(
             tr("Остановить загрузку", "Stop download")
@@ -2426,6 +2600,7 @@ class ComponentSetupDialog(QDialog):
 
     def _failed(self, message: str) -> None:
         self.installing = False
+        self.model_combo.setEnabled(True)
         self.install_button.setEnabled(True)
         self.install_button.setText(tr("Повторить", "Retry"))
         self.cancel_button.setText(tr("Закрыть", "Close"))
@@ -2488,7 +2663,15 @@ class VoiceOverlay(QWidget):
         self.timer = QTimer(self)
         self.timer.setTimerType(Qt.TimerType.PreciseTimer)
         self.timer.timeout.connect(self._tick)
-        self.timer.start(16)
+        self.timer.setInterval(16)
+
+    def showEvent(self, event: Any) -> None:
+        self.timer.start()
+        super().showEvent(event)
+
+    def hideEvent(self, event: Any) -> None:
+        self.timer.stop()
+        super().hideEvent(event)
 
     def show_for_state(self, state: str, message: str | None = None) -> None:
         previous_state = self.state
@@ -3243,6 +3426,9 @@ class VoiceApp(QObject):
         self.active_device = ""
         self.active_compute_type = ""
         self.model_error = ""
+        self.model_rollback: tuple[str, str] | None = None
+        self.update_busy = False
+        self.available_update: dict | None = None
         self.state = "loading"
         self.foreground_window = 0
         self.last_insertion: dict[str, Any] | None = None
@@ -3291,6 +3477,9 @@ class VoiceApp(QObject):
         )
         self.settings_action.triggered.connect(self._queue_settings)
         self.tray_menu.addAction(self.settings_action)
+        self.update_action = QAction(tr("Проверить обновления…", "Check for updates…"), self.tray_menu)
+        self.update_action.triggered.connect(self._request_update)
+        self.tray_menu.addAction(self.update_action)
         self.undo_action = QAction(
             tr("Отменить последнюю вставку", "Undo last insertion"),
             self.tray_menu,
@@ -3306,6 +3495,93 @@ class VoiceApp(QObject):
         self.tray.show()
 
         self._load_model_async()
+
+        self.update_timer = QTimer(self)
+        self.update_timer.setInterval(60 * 60 * 1000)
+        self.update_timer.timeout.connect(self._automatic_update_check)
+        self.update_timer.start()
+        QTimer.singleShot(15000, self._automatic_update_check)
+
+    def _automatic_update_check(self) -> None:
+        if not self.config.get("check_updates", True):
+            return
+        try:
+            elapsed = time.time() - float(self.config.get("last_update_check", 0))
+        except (ValueError, TypeError):
+            elapsed = 86400
+        if elapsed >= 86400 or elapsed < 0:
+            self._check_updates(False)
+
+    def _request_update(self) -> None:
+        QTimer.singleShot(150, lambda: self._check_updates(True))
+
+    def _check_updates(self, manual: bool = False) -> None:
+        if self.update_busy:
+            return
+        if manual and self.available_update:
+            self._show_update_dialog(self.available_update)
+            return
+        self.update_busy = True
+        self.update_manual = manual
+        self.update_action.setEnabled(False)
+        worker = FunctionWorker(updates.check_release, APP_VERSION)
+        worker.signals.succeeded.connect(self._update_checked)
+        worker.signals.failed.connect(self._update_failed)
+        self.update_worker = worker
+        self.thread_pool.start(worker)
+
+    def _update_checked(self, result: object) -> None:
+        manual = self.update_manual
+        self.update_busy = False
+        self.update_action.setEnabled(True)
+        self.config["last_update_check"] = time.time()
+        try:
+            save_config(self.config)
+        except OSError as exc:
+            log_message(f"Could not save update check time: {exc}")
+        if result:
+            self.available_update = dict(result)
+            version = self.available_update["version"]
+            self.update_action.setText(tr(f"Доступна версия {version}…", f"Version {version} available…"))
+            if manual:
+                self._show_update_dialog(self.available_update)
+            elif self.config.get("check_updates", True):
+                self.tray.showMessage(APP_NAME,
+                    tr(f"Доступна версия {version}. Откройте обновление в меню значка в трее.",
+                       f"Version {version} is available. Open the update from the tray menu."),
+                    QSystemTrayIcon.MessageIcon.Information, 6000)
+        elif manual:
+            QMessageBox.information(None, APP_NAME, tr(
+                f"Установлена версия {APP_VERSION}. Более новых стабильных релизов нет.",
+                f"Installed version: {APP_VERSION}. No newer stable releases are available."))
+
+    def _update_failed(self, details: str) -> None:
+        manual = self.update_manual
+        self.update_busy = False
+        self.update_action.setEnabled(True)
+        log_message("Update check failed: " + details.strip().splitlines()[-1])
+        if manual:
+            QMessageBox.information(None, APP_NAME, tr(
+                "Не удалось проверить обновления. Проверьте подключение и повторите позже. Диктовка продолжает работать.",
+                "Could not check for updates. Check your connection and try later. Dictation is still available."))
+
+    def _show_update_dialog(self, release: dict) -> None:
+        dialog = QDialog()
+        dialog.setWindowTitle(tr("Обновление KeyUp Voice", "KeyUp Voice update"))
+        dialog.resize(620, 460)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel(tr(f"Доступна версия {release['version']}. Установлена: {APP_VERSION}.",
+                                   f"Version {release['version']} is available. Installed: {APP_VERSION}.")))
+        notes = QTextBrowser()
+        notes.setPlainText(release["notes"] or tr("Описание отсутствует.", "No release notes."))
+        layout.addWidget(notes)
+        download = QPushButton(tr("Открыть страницу скачивания", "Open download page"))
+        download.clicked.connect(lambda: webbrowser.open(updates.RELEASES_URL))
+        layout.addWidget(download)
+        close = QPushButton(tr("Закрыть", "Close"))
+        close.clicked.connect(dialog.accept)
+        layout.addWidget(close)
+        dialog.exec()
 
     def _configure_hotkey(self) -> None:
         for key_poller in self.key_pollers:
@@ -3339,13 +3615,16 @@ class VoiceApp(QObject):
             (hotkey_name, "transcribe"),
             (translation_hotkey_name, "translate"),
         ):
+            if mode == "translate" and not translation_supported(self.config.get("model_id")):
+                self.translation_hotkey_label = tr("отключён для этой модели", "disabled for this model")
+                continue
             _modifiers, trigger = hotkey_parts(key_name)
             input_hook: KeyboardHook | MouseHotkeyHook
             if trigger in MOUSE_TRIGGER_VKS:
-                input_hook = MouseHotkeyHook(key_name)
+                input_hook = MouseHotkeyHook(key_name, active_when=lambda: self.settings_dialog is None)
                 self.mouse_hooks.append(input_hook)
             else:
-                input_hook = KeyboardHook(key_name)
+                input_hook = KeyboardHook(key_name, active_when=lambda: self.settings_dialog is None)
                 self.keyboard_hooks.append(input_hook)
             input_hook.pressed.connect(
                 lambda active_mode=mode: self.begin_recording(active_mode)
@@ -3354,7 +3633,7 @@ class VoiceApp(QObject):
                 lambda active_mode=mode: self.finish_recording(active_mode)
             )
             input_hook.failed.connect(self.show_error)
-            key_poller = KeyStatePoller(key_name)
+            key_poller = KeyStatePoller(key_name, active_when=lambda: self.settings_dialog is None)
             key_poller.pressed.connect(
                 lambda active_mode=mode: self.begin_recording(active_mode)
             )
@@ -3368,6 +3647,7 @@ class VoiceApp(QObject):
         self.cancel_hook = KeyboardHook(
             "escape",
             active_when=lambda: self.state == "recording",
+            ignore_modifiers=True,
         )
         self.cancel_hook.pressed.connect(self.cancel_recording)
         self.cancel_hook.failed.connect(self.show_error)
@@ -3386,12 +3666,12 @@ class VoiceApp(QObject):
         QTimer.singleShot(150, self.show_settings)
 
     def show_settings(self) -> None:
-        if self.state in {"recording", "transcribing"}:
+        if self.state in {"recording", "transcribing", "loading"}:
             self.tray.showMessage(
                 APP_NAME,
                 tr(
-                    "Дождитесь завершения текущей диктовки.",
-                    "Wait for the current dictation to finish.",
+                    "Дождитесь завершения диктовки или загрузки модели.",
+                    "Wait for dictation or model loading to finish.",
                 ),
                 QSystemTrayIcon.MessageIcon.Information,
                 1800,
@@ -3445,6 +3725,7 @@ class VoiceApp(QObject):
             for key in ("hotkey", "translation_hotkey")
         )
         self.config = new_config
+        self._automatic_update_check()
         self.recorder.microphone = self.config.get("microphone")
         self.recorder.max_seconds = float(
             self.config.get("max_recording_seconds", 300)
@@ -3455,7 +3736,7 @@ class VoiceApp(QObject):
         self.overlay.animation_style = str(
             self.config.get("animation_style", "live_ball")
         )
-        if hotkey_changed:
+        if hotkey_changed and not model_changed:
             self._configure_hotkey()
         self.tray.setToolTip(
             tr(
@@ -3477,6 +3758,7 @@ class VoiceApp(QObject):
             1800,
         )
         if model_changed:
+            self.state = "loading"
             QTimer.singleShot(
                 250,
                 lambda: self._change_whisper_model(
@@ -3512,6 +3794,7 @@ class VoiceApp(QObject):
                 self.config["model_id"] = previous_model_id
                 self.config["model_path"] = previous_model_path
                 save_config(self.config)
+                self._configure_hotkey()
                 self.state = "ready"
                 self.status_action.setText(
                     f"{tr('Готово', 'Ready')} · "
@@ -3520,6 +3803,7 @@ class VoiceApp(QObject):
                 return
             self.config = load_config()
 
+        self.model_rollback = (previous_model_id, previous_model_path)
         old_model = self.model
         self.model = None
         del old_model
@@ -3563,10 +3847,22 @@ class VoiceApp(QObject):
             compute_type = configured_compute
 
         model = WhisperModel(str(model_path), device=device, compute_type=compute_type)
+        self._match_feature_size(model)
         return model, device, compute_type
+
+    @staticmethod
+    def _match_feature_size(model: Any) -> None:
+        # Some community conversions omit preprocessor_config.json (v3 needs 128).
+        if model.feature_extractor.mel_filters.shape[0] != model.model.n_mels:
+            from faster_whisper.feature_extractor import FeatureExtractor
+            parameters = dict(model.feat_kwargs)
+            parameters["feature_size"] = model.model.n_mels
+            model.feature_extractor = FeatureExtractor(**parameters)
 
     def _model_loaded(self, result: object) -> None:
         self.model, device, compute_type = result  # type: ignore[misc]
+        self.model_rollback = None
+        self._configure_hotkey()
         self.active_device = device
         self.active_compute_type = compute_type
         log_message(f"Model loaded: device={device}, compute_type={compute_type}")
@@ -3597,6 +3893,16 @@ class VoiceApp(QObject):
 
     def _model_failed(self, details: str) -> None:
         log_message(f"Model loading failed:\n{details}")
+        if self.model_rollback is not None:
+            self.config["model_id"], self.config["model_path"] = self.model_rollback
+            self.model_rollback = None
+            save_config(self.config)
+            self.tray.showMessage(APP_NAME, tr(
+                "Выбранная модель не загрузилась. Возвращаем предыдущую модель.",
+                "The selected model could not be loaded. Restoring the previous model."),
+                QSystemTrayIcon.MessageIcon.Warning, 4000)
+            self._load_model_async()
+            return
         self.model_error = details
         self.state = "error"
         self.status_action.setText(
@@ -3612,6 +3918,12 @@ class VoiceApp(QObject):
         print(details, file=sys.stderr)
 
     def begin_recording(self, mode: str = "transcribe") -> None:
+        if self.settings_dialog is not None:
+            return
+        if mode == "translate" and not translation_supported(self.config.get("model_id")):
+            self.tray.showMessage(APP_NAME, translation_explanation(self.config.get("model_id")),
+                                  QSystemTrayIcon.MessageIcon.Information, 4000)
+            return
         if self.state != "ready":
             if self.state == "loading":
                 self.tray.showMessage(
@@ -3691,7 +4003,7 @@ class VoiceApp(QObject):
         if self.state != "recording":
             return
         try:
-            self.recorder.stop()
+            self.recorder.stop(discard=True)
         except Exception as exc:
             log_message(f"Recording cancellation cleanup failed: {exc!r}")
         self.state = "ready"
@@ -3756,6 +4068,7 @@ class VoiceApp(QObject):
                 device="cpu",
                 compute_type="int8",
             )
+            self._match_feature_size(self.model)
             self.active_device = "cpu"
             self.active_compute_type = "int8"
             return transcribe_with(self.model)
@@ -3903,7 +4216,6 @@ class VoiceApp(QObject):
             )
 
         self.last_insertion = {
-            "text": text,
             "window": int(self.foreground_window or 0),
             "undone": False,
         }
@@ -3916,7 +4228,7 @@ class VoiceApp(QObject):
         log_message(f"Application error: {message}")
         if self.recorder.is_recording:
             try:
-                self.recorder.stop()
+                self.recorder.stop(discard=True)
             except Exception:
                 pass
         if self.state != "loading":
@@ -3940,12 +4252,25 @@ class VoiceApp(QObject):
         if self.cancel_hook is not None:
             self.cancel_hook.stop()
         if self.recorder.is_recording:
-            self.recorder.stop()
+            self.recorder.stop(discard=True)
         self.tray.hide()
         self.qt_app.quit()
 
 
 def main() -> int:
+    if "--self-test" in sys.argv:
+        # Exercise the packaged native libraries without touching user data,
+        # installing hooks, opening the microphone, or making network requests.
+        import ctranslate2
+        from faster_whisper.feature_extractor import FeatureExtractor
+        qt_test = QApplication([])
+        overlay = VoiceOverlay()
+        assert not overlay.timer.isActive()
+        assert FeatureExtractor().mel_filters.shape[0] == 80
+        assert ctranslate2.get_supported_compute_types("cpu")
+        overlay.close()
+        qt_test.quit()
+        return 0
     if sys.platform != "win32":
         print(
             tr(

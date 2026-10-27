@@ -17,11 +17,21 @@ them after a short delay.
 
 ## Network access
 
-The application uses the network only when required components are missing:
+The application uses the network for the following purposes:
 
 - Whisper model files are downloaded from Hugging Face.
 - NVIDIA cuBLAS and cuDNN packages are downloaded from PyPI on supported
   NVIDIA systems.
+- Custom model metadata and compatibility are checked on Hugging Face.
+- GitHub's public Releases API is checked for new stable versions. Automatic
+  checks can be disabled in Settings; manual checks remain available.
+
+Update requests do not include recordings, recognized text, settings, or machine
+identifiers. GitHub and Hugging Face receive normal network metadata, including
+the IP address. Custom repository IDs and pinned file metadata are stored locally
+in `%APPDATA%\KeyUp Voice\custom-models.json`.
+For local models, this file also stores the selected folder path. That path is
+not sent to Hugging Face or GitHub, and the model files are not copied.
 
 Downloaded files are checked against pinned sizes and SHA-256 hashes.
 Recognition and translation do not require a network connection after setup.
